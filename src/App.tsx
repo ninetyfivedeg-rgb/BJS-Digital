@@ -25,7 +25,7 @@ import {
   AuthUser,
   SimpanPinjamCashMutation,
 } from './types';
-import { BUSINESS_UNITS_CONFIG } from './data/mockData';
+import { BUSINESS_UNITS_CONFIG, INITIAL_MEMBERS, INITIAL_SAVINGS } from './data/mockData';
 import {
   loadMembers,
   saveMembers,
@@ -47,11 +47,21 @@ import {
   getNextMemberId,
 } from './utils/storage';
 import { getCurrentUser, logoutUser } from './utils/auth';
+import { auth, signInWithGoogle, logOutFirebase } from './firebase';
+import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
+import {
+  seedInitialDataIfEmpty,
+  subscribeToCollection,
+  upsertDocument,
+  deleteDocument,
+} from './utils/firebaseSync';
 
 export default function App() {
   // Authentication State
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => getCurrentUser());
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [isCloudSynced, setIsCloudSynced] = useState<boolean>(false);
 
   // Navigation States
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
@@ -109,6 +119,84 @@ export default function App() {
     saveBusinessTransactions(businessTransactions);
   }, [businessTransactions]);
 
+  // Listen to Firebase Auth state & auto-seed initial data when signed in
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setFirebaseUser(user);
+      if (user) {
+        try {
+          await seedInitialDataIfEmpty(INITIAL_MEMBERS, INITIAL_SAVINGS);
+          setIsCloudSynced(true);
+        } catch (e) {
+          console.warn('Failed to seed or verify Firestore data', e);
+        }
+      } else {
+        setIsCloudSynced(false);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Real-time Firestore subscriptions when Firebase user is active
+  useEffect(() => {
+    if (!firebaseUser) return;
+
+    const unsubs = [
+      subscribeToCollection<Member>('members', (items) => {
+        if (items.length > 0) setMembers(items);
+      }),
+      subscribeToCollection<SavingsTransaction>('savings', (items) => {
+        if (items.length > 0) setSavings(items);
+      }),
+      subscribeToCollection<Loan>('loans', (items) => {
+        setLoans(items);
+      }),
+      subscribeToCollection<LoanRepayment>('repayments', (items) => {
+        setRepayments(items);
+      }),
+      subscribeToCollection<CashFlowRecord>('cashFlow', (items) => {
+        setCashFlow(items);
+      }),
+      subscribeToCollection<SimpanPinjamCashMutation>('spCashMutations', (items) => {
+        setSpCashMutations(items);
+      }),
+      subscribeToCollection<BusinessUnitTransaction>('businessTransactions', (items) => {
+        setBusinessTransactions(items);
+      }),
+    ];
+
+    return () => {
+      unsubs.forEach((unsub) => unsub());
+    };
+  }, [firebaseUser]);
+
+  // Sync helper for Firestore writes
+  const syncDoc = <T extends { id: string }>(col: string, item: T) => {
+    if (firebaseUser) {
+      upsertDocument(col, item).catch((e) => console.warn(`Firestore sync error on ${col}:`, e));
+    }
+  };
+
+  const removeDoc = (col: string, id: string) => {
+    if (firebaseUser) {
+      deleteDocument(col, id).catch((e) => console.warn(`Firestore delete error on ${col}:`, e));
+    }
+  };
+
+  const handleConnectGoogle = async () => {
+    try {
+      const user = await signInWithGoogle();
+      if (user) {
+        setFirebaseUser(user);
+        setIsCloudSynced(true);
+      }
+    } catch (err: any) {
+      if (err?.code !== 'auth/popup-closed-by-user' && err?.code !== 'auth/cancelled-popup-request') {
+        console.error('Failed to connect Google Cloud:', err);
+      }
+    }
+  };
+
   // Auth Handlers
   const handleLoginSuccess = (user: AuthUser) => {
     setCurrentUser(user);
@@ -117,6 +205,7 @@ export default function App() {
 
   const handleLogout = () => {
     logoutUser();
+    logOutFirebase().catch(() => {});
     setCurrentUser(null);
   };
 
@@ -170,11 +259,15 @@ export default function App() {
       description: `${descPrefix} ${txData.description || txData.title || ''}`.trim(),
     };
     setCashFlow((prev) => [newCashFlow, ...prev]);
+
+    syncDoc('businessTransactions', newTx);
+    syncDoc('cashFlow', newCashFlow);
   };
 
   const handleDeleteBusinessTransaction = (txId: string) => {
     setBusinessTransactions((prev) => prev.filter((t) => t.id !== txId));
     setCashFlow((prev) => prev.filter((cf) => cf.referenceId !== txId));
+    removeDoc('businessTransactions', txId);
   };
 
   // Member Handlers
@@ -187,6 +280,7 @@ export default function App() {
 
     const updatedMembers = [...members, newMember];
     setMembers(updatedMembers);
+    syncDoc('members', newMember);
 
     // If initial simpanan pokok is provided, record it
     if (initialPokok > 0) {
@@ -208,6 +302,7 @@ export default function App() {
         notes: 'Setoran Simpanan Pokok awal pendaftaran',
       };
       setSavings((prev) => [...prev, newSavingsTx]);
+      syncDoc('savings', newSavingsTx);
 
       // Record in cash flow
       const cfRecord: CashFlowRecord = {
@@ -220,11 +315,13 @@ export default function App() {
         description: `Setoran Simpanan Pokok - ${newMember.name} (${newId})`,
       };
       setCashFlow((prev) => [...prev, cfRecord]);
+      syncDoc('cashFlow', cfRecord);
     }
   };
 
   const handleEditMember = (updatedMember: Member) => {
     setMembers((prev) => prev.map((m) => (m.id === updatedMember.id ? updatedMember : m)));
+    syncDoc('members', updatedMember);
   };
 
   const handleDeleteMember = (memberId: string) => {
@@ -233,6 +330,7 @@ export default function App() {
     setSavings((prev) => prev.filter((s) => s.memberId !== memberId));
     setLoans((prev) => prev.filter((l) => l.memberId !== memberId));
     setRepayments((prev) => prev.filter((r) => r.memberId !== memberId));
+    removeDoc('members', memberId);
   };
 
   // Savings Handlers
@@ -262,6 +360,9 @@ export default function App() {
       }`,
     };
     setCashFlow((prev) => [...prev, cfRecord]);
+
+    syncDoc('savings', newTx);
+    syncDoc('cashFlow', cfRecord);
   };
 
   const handleBatchAddWajib = (transactions: Omit<SavingsTransaction, 'id'>[]) => {
@@ -289,14 +390,18 @@ export default function App() {
     };
 
     setCashFlow((prev) => [...prev, cfRecord]);
+
+    newSavingsList.forEach((s) => syncDoc('savings', s));
+    syncDoc('cashFlow', cfRecord);
   };
 
   const handleCompleteBerjangka = (savingsId: string) => {
     const target = savings.find((s) => s.id === savingsId);
     if (!target) return;
 
+    const updatedTarget = { ...target, statusBerjangka: 'selesai' as const };
     setSavings((prev) =>
-      prev.map((s) => (s.id === savingsId ? { ...s, statusBerjangka: 'selesai' as const } : s))
+      prev.map((s) => (s.id === savingsId ? updatedTarget : s))
     );
 
     const todayDate = new Date().toISOString().split('T')[0];
@@ -323,10 +428,15 @@ export default function App() {
     };
 
     setCashFlow((prev) => [...prev, cfPrincipal, cfInterest]);
+
+    syncDoc('savings', updatedTarget);
+    syncDoc('cashFlow', cfPrincipal);
+    syncDoc('cashFlow', cfInterest);
   };
 
   const handleDeleteSavings = (savingsId: string) => {
     setSavings((prev) => prev.filter((s) => s.id !== savingsId));
+    removeDoc('savings', savingsId);
   };
 
   // Loan Handlers
@@ -425,7 +535,11 @@ export default function App() {
       };
 
       setCashFlow((prev) => [...prev, disbursementCF, adminFeeCF]);
+      syncDoc('cashFlow', disbursementCF);
+      syncDoc('cashFlow', adminFeeCF);
     }
+
+    syncDoc('loans', newLoan);
   };
 
   const handleApproveLoan = (loanId: string) => {
@@ -433,9 +547,8 @@ export default function App() {
     if (!loan) return;
 
     const todayStr = new Date().toISOString().split('T')[0];
-    const updated = loans.map((l) =>
-      l.id === loanId ? { ...l, status: 'aktif' as const, approvedDate: todayStr } : l
-    );
+    const updatedLoan = { ...loan, status: 'aktif' as const, approvedDate: todayStr };
+    const updated = loans.map((l) => (l.id === loanId ? updatedLoan : l));
     setLoans(updated);
 
     const disbursementCF: CashFlowRecord = {
@@ -458,15 +571,25 @@ export default function App() {
     };
 
     setCashFlow((prev) => [...prev, disbursementCF, adminFeeCF]);
+
+    syncDoc('loans', updatedLoan);
+    syncDoc('cashFlow', disbursementCF);
+    syncDoc('cashFlow', adminFeeCF);
   };
 
   const handleRejectLoan = (loanId: string) => {
-    setLoans((prev) => prev.map((l) => (l.id === loanId ? { ...l, status: 'ditolak' as const } : l)));
+    const loan = loans.find((l) => l.id === loanId);
+    if (loan) {
+      const updatedLoan = { ...loan, status: 'ditolak' as const };
+      setLoans((prev) => prev.map((l) => (l.id === loanId ? updatedLoan : l)));
+      syncDoc('loans', updatedLoan);
+    }
   };
 
   const handleDeleteLoan = (loanId: string) => {
     setLoans((prev) => prev.filter((l) => l.id !== loanId));
     setRepayments((prev) => prev.filter((r) => r.loanId !== loanId));
+    removeDoc('loans', loanId);
   };
 
   const handlePayInstallment = ({
@@ -517,16 +640,14 @@ export default function App() {
 
     const isAllPaid = updatedSchedules.every((s) => s.isPaid);
 
+    const updatedLoan: Loan = {
+      ...targetLoan,
+      schedules: updatedSchedules,
+      status: isAllPaid ? ('lunas' as const) : targetLoan.status,
+    };
+
     setLoans((prev) =>
-      prev.map((l) =>
-        l.id === loanId
-          ? {
-              ...l,
-              schedules: updatedSchedules,
-              status: isAllPaid ? ('lunas' as const) : l.status,
-            }
-          : l
-      )
+      prev.map((l) => (l.id === loanId ? updatedLoan : l))
     );
 
     const cfPrincipal: CashFlowRecord = {
@@ -549,6 +670,11 @@ export default function App() {
     };
 
     setCashFlow((prev) => [...prev, cfPrincipal, cfInterest]);
+
+    syncDoc('repayments', newRepayment);
+    syncDoc('loans', updatedLoan);
+    syncDoc('cashFlow', cfPrincipal);
+    syncDoc('cashFlow', cfInterest);
   };
 
   const handleAddCashFlow = (record: Omit<CashFlowRecord, 'id'>) => {
@@ -557,6 +683,7 @@ export default function App() {
       ...record,
     };
     setCashFlow((prev) => [...prev, newRecord]);
+    syncDoc('cashFlow', newRecord);
   };
 
   const handleAddSpCashMutation = (mutationData: Omit<SimpanPinjamCashMutation, 'id' | 'createdAt'>) => {
@@ -585,6 +712,9 @@ export default function App() {
     const updatedCashFlow = [newRecord, ...cashFlow];
     setCashFlow(updatedCashFlow);
     saveCashFlow(updatedCashFlow);
+
+    syncDoc('spCashMutations', newMutation);
+    syncDoc('cashFlow', newRecord);
   };
 
   const handleDeleteSpCashMutation = (id: string) => {
@@ -595,6 +725,8 @@ export default function App() {
     const updatedCashFlow = cashFlow.filter((cf) => cf.referenceId !== id);
     setCashFlow(updatedCashFlow);
     saveCashFlow(updatedCashFlow);
+
+    removeDoc('spCashMutations', id);
   };
 
   const handleResetData = () => {
@@ -651,6 +783,9 @@ export default function App() {
           currentUser={currentUser}
           onOpenChangePassword={() => setIsChangePasswordOpen(true)}
           onLogout={handleLogout}
+          isFirebaseConnected={Boolean(firebaseUser || isCloudSynced)}
+          firebaseUserEmail={firebaseUser?.email}
+          onConnectGoogle={handleConnectGoogle}
         />
 
         <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
