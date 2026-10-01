@@ -1,8 +1,8 @@
 import React from 'react';
-import { Menu, Calendar, ShieldCheck, User, KeyRound, LogOut, Cloud } from 'lucide-react';
+import { Menu, Calendar, ShieldCheck, User, KeyRound, LogOut } from 'lucide-react';
 import { formatDateIndo } from '../utils/formatters';
 import { NavTab } from './Sidebar';
-import { AuthUser } from '../types';
+import { AuthUser, UserRole } from '../types';
 
 interface TopHeaderProps {
   activeTab: NavTab;
@@ -10,9 +10,6 @@ interface TopHeaderProps {
   currentUser: AuthUser | null;
   onOpenChangePassword: () => void;
   onLogout: () => void;
-  isFirebaseConnected?: boolean;
-  onConnectGoogle?: () => void;
-  firebaseUserEmail?: string | null;
 }
 
 export const TopHeader: React.FC<TopHeaderProps> = ({
@@ -21,9 +18,6 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   currentUser,
   onOpenChangePassword,
   onLogout,
-  isFirebaseConnected = true,
-  onConnectGoogle,
-  firebaseUserEmail,
 }) => {
   const today = new Date().toISOString();
 
@@ -91,18 +85,6 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
 
       {/* Right: Date, User Identity, Change Password & Logout */}
       <div className="flex items-center gap-3 shrink-0">
-        {/* Firebase Cloud Sync Badge */}
-        {isFirebaseConnected && (
-          <div
-            className="hidden md:flex items-center gap-1.5 text-xs text-emerald-800 font-semibold bg-emerald-50 px-2.5 py-1 rounded-xl border border-emerald-200 shadow-2xs"
-            title="Database Cloud Firestore Aktif"
-          >
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <Cloud className="w-3.5 h-3.5 text-emerald-600" />
-            <span className="text-[11px] font-bold">Cloud Aktif</span>
-          </div>
-        )}
-
         {/* Date Display */}
         <div className="hidden xl:flex items-center gap-1.5 text-xs text-slate-600 font-medium bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200">
           <Calendar className="w-3.5 h-3.5 text-slate-400" />
