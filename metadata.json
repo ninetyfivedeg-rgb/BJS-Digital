@@ -1,0 +1,6 @@
+{
+  "name": "Koperasi Brama Jaya Sejahtera",
+  "description": "Sistem Informasi Akuntansi & Manajemen Simpan Pinjam Koperasi Brama Jaya Sejahtera (BJS Digital). Pengelolaan simpanan, pinjaman, angsuran, SHU, dan pembukuan kas.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    @apply bg-slate-100 text-slate-900 min-h-screen font-sans antialiased selection:bg-emerald-100 selection:text-emerald-900;
+  }
+}
+
+@media print {
+  header, nav, .print\:hidden, button {
+    display: none !important;
+  }
+  body {
+    background-color: white !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  #printable-receipt {
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    width: 100% !important;
+  }
+}
