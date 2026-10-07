@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Lock, Eye, EyeOff, CheckCircle2, AlertCircle, KeyRound, X } from 'lucide-react';
+import { Eye, EyeOff, CheckCircle2, AlertCircle, KeyRound, X, ShieldAlert, LogOut } from 'lucide-react';
 import { AuthUser } from '../types';
 import { changeUserPassword } from '../utils/auth';
 
@@ -7,12 +7,18 @@ interface ChangePasswordModalProps {
   isOpen: boolean;
   onClose: () => void;
   currentUser: AuthUser;
+  isMandatory?: boolean;
+  onSuccess?: () => void;
+  onLogout?: () => void;
 }
 
 export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
   isOpen,
   onClose,
   currentUser,
+  isMandatory = false,
+  onSuccess,
+  onLogout,
 }) => {
   const [oldPassword, setOldPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -21,10 +27,11 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
   const [showNew, setShowNew] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
     setSuccessMsg('');
@@ -34,30 +41,52 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
       return;
     }
 
-    if (newPassword.length < 4) {
-      setErrorMsg('Kata sandi baru minimal harus 4 karakter.');
+    if (newPassword.length < 6) {
+      setErrorMsg('Kata sandi baru minimal harus 6 karakter.');
       return;
     }
 
-    const result = changeUserPassword(currentUser.username, oldPassword, newPassword);
-    if (!result.success) {
-      setErrorMsg(result.error || 'Gagal mengubah kata sandi.');
+    if (oldPassword === newPassword) {
+      setErrorMsg('Kata sandi baru tidak boleh sama dengan kata sandi saat ini.');
       return;
     }
 
-    setSuccessMsg('Kata sandi berhasil diperbarui! Silakan gunakan kata sandi baru untuk login berikutnya.');
-    setOldPassword('');
-    setNewPassword('');
-    setConfirmPassword('');
+    setIsLoading(true);
 
-    setTimeout(() => {
-      onClose();
-      setSuccessMsg('');
-    }, 1800);
+    try {
+      const result = await changeUserPassword(currentUser, oldPassword, newPassword);
+      setIsLoading(false);
+
+      if (!result.success) {
+        setErrorMsg(result.error || 'Gagal mengubah kata sandi.');
+        return;
+      }
+
+      setSuccessMsg('Kata sandi berhasil diperbarui! Anda sekarang dapat menggunakan sistem BJS Digital.');
+      setOldPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+
+      setTimeout(() => {
+        onSuccess?.();
+        onClose();
+        setSuccessMsg('');
+      }, 1500);
+    } catch {
+      setIsLoading(false);
+      setErrorMsg('Terjadi kendala saat mengubah kata sandi. Silakan coba kembali.');
+    }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-4 backdrop-blur-xs"
+      onClick={(e) => {
+        if (!isMandatory && e.target === e.currentTarget) {
+          onClose();
+        }
+      }}
+    >
       <div className="relative w-full max-w-md rounded-2xl bg-white shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-200 bg-slate-900 px-6 py-4 text-white">
@@ -66,22 +95,39 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
               <KeyRound className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="font-extrabold text-sm">Ganti Kata Sandi</h3>
+              <h3 className="font-extrabold text-sm">
+                {isMandatory ? 'Wajib Ganti Kata Sandi Akun' : 'Ganti Kata Sandi'}
+              </h3>
               <p className="text-[11px] text-slate-300">
                 Akun: <span className="font-bold text-white">{currentUser.name}</span> ({currentUser.username})
               </p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white transition cursor-pointer"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          {!isMandatory && (
+            <button
+              onClick={onClose}
+              className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white transition cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          )}
         </div>
 
         {/* Content */}
         <div className="p-6">
+          {/* Notice jika wajib ganti password */}
+          {isMandatory && (
+            <div className="mb-4 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2.5">
+              <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold">Keamanan Akun Diperlukan</p>
+                <p className="text-[11px] mt-0.5 text-amber-800">
+                  Untuk keamanan akun Anda, silakan ganti kata sandi awal (default) menjadi kata sandi pribadi Anda sebelum mengakses aplikasi.
+                </p>
+              </div>
+            </div>
+          )}
+
           {errorMsg && (
             <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
@@ -107,7 +153,7 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
                   required
                   value={oldPassword}
                   onChange={(e) => setOldPassword(e.target.value)}
-                  placeholder="Masukkan kata sandi lama (default: Damkar123)"
+                  placeholder="Masukkan kata sandi saat ini (default: Damkar123)"
                   className="w-full pl-3 pr-10 py-2 rounded-xl border border-slate-300 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
                 />
                 <button
@@ -130,7 +176,7 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
                   required
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="Minimal 4 karakter"
+                  placeholder="Minimal 6 karakter"
                   className="w-full pl-3 pr-10 py-2 rounded-xl border border-slate-300 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
                 />
                 <button
@@ -158,18 +204,35 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
             </div>
 
             <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-4 py-2 text-xs font-bold rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 cursor-pointer"
-              >
-                Batal
-              </button>
+              {isMandatory ? (
+                onLogout && (
+                  <button
+                    type="button"
+                    onClick={onLogout}
+                    className="px-3.5 py-2 text-xs font-bold rounded-xl border border-rose-200 text-rose-700 hover:bg-rose-50 flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    <span>Keluar (Logout)</span>
+                  </button>
+                )
+              ) : (
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-4 py-2 text-xs font-bold rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 cursor-pointer"
+                >
+                  Batal
+                </button>
+              )}
               <button
                 type="submit"
-                className="px-5 py-2 text-xs font-bold rounded-xl bg-blue-900 hover:bg-blue-950 text-white shadow-md cursor-pointer"
+                disabled={isLoading}
+                className="px-5 py-2 text-xs font-bold rounded-xl bg-blue-900 hover:bg-blue-950 text-white shadow-md cursor-pointer disabled:opacity-70 flex items-center gap-2"
               >
-                Simpan Perubahan
+                {isLoading && (
+                  <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                )}
+                <span>Simpan Perubahan</span>
               </button>
             </div>
           </form>

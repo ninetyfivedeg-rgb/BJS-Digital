@@ -17,11 +17,24 @@ import {
   Receipt,
   Sparkles,
   ShieldCheck,
+  AlertCircle,
+  Info,
 } from 'lucide-react';
-import { Member, SavingsTransaction, Loan, LoanRepayment, BusinessUnitReport, UserRole, KOPERASI_OFFICIALS } from '../types';
+import {
+  Member,
+  SavingsTransaction,
+  Loan,
+  LoanRepayment,
+  BusinessUnitReport,
+  UserRole,
+  AuthUser,
+  CooperativeSummary,
+  KOPERASI_OFFICIALS,
+} from '../types';
 import { formatRupiah, formatNumber, formatDateIndo } from '../utils/formatters';
 import { printHtmlContent } from '../utils/printHelper';
 import { calculateMemberSavings } from '../utils/storage';
+import { calculateCooperativeShu, calculateMembersShuDetails } from '../services/shuService';
 
 interface ShuViewProps {
   members: Member[];
@@ -31,6 +44,9 @@ interface ShuViewProps {
   businessReports?: BusinessUnitReport[];
   totalBusinessProfit?: number;
   userRole?: UserRole;
+  currentUser?: AuthUser | null;
+  summary?: CooperativeSummary;
+  isFromSupabase?: boolean;
 }
 
 // 1. Rekapitulasi Laba Unit Usaha Item
@@ -69,48 +85,81 @@ export const ShuView: React.FC<ShuViewProps> = ({
   businessReports = [],
   totalBusinessProfit = 0,
   userRole = 'pengurus',
+  currentUser,
+  summary,
+  isFromSupabase = false,
 }) => {
+  const isAnggota = userRole === 'anggota' || currentUser?.role === 'anggota';
   const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear());
   const [searchMember, setSearchMember] = useState<string>('');
   const [filterStatus, setFilterStatus] = useState<'semua' | 'aktif' | 'pasif'>('semua');
   const [activeSubTab, setActiveSubTab] = useState<'rekap' | 'rat' | 'anggota'>('rekap');
 
-  // Calculate live initial profits from connected business units
+  // Single Source of Truth perhitungan SHU dari aktivitas ekonomi riil
+  const liveCoopSummary: CooperativeSummary = summary || {
+    totalCash: 0,
+    totalOperasionalSP: 0,
+    totalSavings: { pokok: 0, wajib: 0, berjangka: 0, sukarela: 0, total: 0 },
+    totalDisbursedLoans: 0,
+    totalOutstandingLoans: 0,
+    totalInterestEarned: repayments.reduce((acc, r) => acc + (Number(r.interestAmount) || 0), 0),
+    membersCount: { aktif: members.length, pasif: 0, keluar: 0, total: members.length },
+    loanWorkflowCount: { diajukan: 0, review: 0, disetujui: 0, dicairkan: 0 },
+    businessUnitProfits: {
+      alat_kebakaran: 0,
+      apar: 0,
+      apar_refill: 0,
+      apar_sales: 0,
+      sembako: 0,
+      atribut: 0,
+    },
+    totalBusinessProfit: totalBusinessProfit || 0,
+    modalAwal: 0,
+    totalExpenses: 0,
+    activeMembersCount: members.length,
+    activeLoansCount: 0,
+  };
+
+  const shuCalc = calculateCooperativeShu(liveCoopSummary, repayments);
+
+  // Ambil laba riil per unit usaha dari businessReports (tanpa angka fiktif)
   const getInitialProfit = (unitName: string): number => {
     if (unitName.includes('Refill')) {
       const u = businessReports.find((r) => r.key === 'apar_refill' || r.unitId === 'apar');
-      return u ? u.netProfit : 2550000;
+      return u ? Number(u.netProfit) || 0 : 0;
     }
     if (unitName.includes('Penjualan APAR') || unitName.includes('Alat Kebakaran')) {
       const u = businessReports.find((r) => r.key === 'apar_sales' || r.unitId === 'alat_kebakaran');
-      return u ? u.netProfit : 2350000;
+      return u ? Number(u.netProfit) || 0 : 0;
     }
     if (unitName.includes('Sembako')) {
       const u = businessReports.find((r) => r.key === 'sembako' || r.unitId === 'sembako');
-      return u ? u.netProfit : 2400000;
+      return u ? Number(u.netProfit) || 0 : 0;
     }
     if (unitName.includes('Simpan Pinjam')) {
-      // Net interest profit from repayments in loans
-      const totalLoanInterest = repayments.reduce((acc, r) => acc + r.interestAmount, 0);
-      return totalLoanInterest;
+      return repayments.reduce((acc, r) => acc + (Number(r.interestAmount) || 0), 0);
     }
     if (unitName.includes('Atribut')) {
       const u = businessReports.find((r) => r.key === 'atribut' || r.unitId === 'atribut');
-      return u ? u.netProfit : 1800000;
+      return u ? Number(u.netProfit) || 0 : 0;
     }
     return 0;
   };
 
-  // 1. REKAPITULASI LABA UNIT USAHA & PERPUTARAN MODAL (Page 1 & 2 PDF)
+  // 1. REKAPITULASI LABA UNIT USAHA & PERPUTARAN MODAL
   const defaultUnitLaba: UnitLabaItem[] = [
-    { id: '1', name: 'Refill APAR', laba: getInitialProfit('Refill'), perputaranModal: 8000000, prosentaseRapb: 20 },
-    { id: '2', name: 'Penjualan APAR', laba: getInitialProfit('Penjualan APAR'), perputaranModal: 12000000, prosentaseRapb: 25 },
-    { id: '3', name: 'Penjualan Sembako', laba: getInitialProfit('Sembako'), perputaranModal: 6500000, prosentaseRapb: 15 },
-    { id: '4', name: 'Simpan Pinjam', laba: getInitialProfit('Simpan Pinjam'), perputaranModal: 15000000, prosentaseRapb: 30 },
-    { id: '5', name: 'Penjualan Atribut', laba: getInitialProfit('Atribut'), perputaranModal: 4500000, prosentaseRapb: 10 },
+    { id: '1', name: 'Refill APAR', laba: getInitialProfit('Refill'), perputaranModal: 0, prosentaseRapb: 20 },
+    { id: '2', name: 'Penjualan APAR', laba: getInitialProfit('Penjualan APAR'), perputaranModal: 0, prosentaseRapb: 25 },
+    { id: '3', name: 'Penjualan Sembako', laba: getInitialProfit('Sembako'), perputaranModal: 0, prosentaseRapb: 15 },
+    { id: '4', name: 'Simpan Pinjam', laba: getInitialProfit('Simpan Pinjam'), perputaranModal: 0, prosentaseRapb: 30 },
+    { id: '5', name: 'Penjualan Atribut', laba: getInitialProfit('Atribut'), perputaranModal: 0, prosentaseRapb: 10 },
   ];
 
   const [unitLabaList, setUnitLabaList] = useState<UnitLabaItem[]>(() => {
+    // Jika data berasal dari Supabase dan belum ada aktivitas transaksi, prioritaskan nilai 0 riil
+    if (isFromSupabase && !shuCalc.hasOperationalActivity) {
+      return defaultUnitLaba;
+    }
     try {
       const saved = localStorage.getItem(STORAGE_KEY_SHU_LABA);
       return saved ? JSON.parse(saved) : defaultUnitLaba;
@@ -119,7 +168,7 @@ export const ShuView: React.FC<ShuViewProps> = ({
     }
   });
 
-  // 2. BIAYA RAT (Page 3 PDF)
+  // 2. BIAYA RAT
   const defaultRatExpenses: RatExpenseItem[] = [
     { id: '1', uraian: 'Narasumber', nominal: 1500000, qty: 1 },
     { id: '2', uraian: 'Uang Kebersihan', nominal: 350000, qty: 1 },
@@ -146,7 +195,7 @@ export const ShuView: React.FC<ShuViewProps> = ({
     }
   });
 
-  // 3. PERSENTASE PEMBAGIAN SHU (Page 3 PDF)
+  // 3. PERSENTASE PEMBAGIAN SHU (Sesuai ART Koperasi)
   const defaultDistRules: ShuDistributionRule[] = [
     { id: '1', uraian: 'Cadangan Modal', prosentase: 30 },
     { id: '2', uraian: 'Pengurus', prosentase: 10 },
@@ -179,14 +228,12 @@ export const ShuView: React.FC<ShuViewProps> = ({
     localStorage.setItem(STORAGE_KEY_SHU_DIST, JSON.stringify(distRules));
   }, [distRules]);
 
-  // Calculations for Table 1: Rekapitulasi Laba Unit Usaha (Page 1 & 2)
-  // a: Unit Usaha, b: Laba, c: Perputaran Modal, d = (b - c) Sisa Laba
-  // e = (d * 2.5%) Biaya Operasional, f = (d - e) Untuk SHU, g: Prosentase RAPB, h = RAPB 2026
+  // Perhitungan Rekapitulasi Laba Unit Usaha
   const rekapCalculated = unitLabaList.map((item) => {
-    const sisaLaba = item.laba - item.perputaranModal; // d = b - c
-    const biayaOps = Math.round(sisaLaba * 0.025); // e = d * 2.5%
-    const untukShu = sisaLaba - biayaOps; // f = d - e
-    const rapbNominal = Math.round((untukShu * item.prosentaseRapb) / 100); // h
+    const sisaLaba = item.laba - item.perputaranModal;
+    const biayaOps = Math.round(sisaLaba * 0.025);
+    const untukShu = sisaLaba - biayaOps;
+    const rapbNominal = Math.round((untukShu * item.prosentaseRapb) / 100);
     return {
       ...item,
       sisaLaba,
@@ -200,95 +247,47 @@ export const ShuView: React.FC<ShuViewProps> = ({
   const totalModalC = rekapCalculated.reduce((acc, curr) => acc + curr.perputaranModal, 0);
   const totalSisaLabaD = rekapCalculated.reduce((acc, curr) => acc + curr.sisaLaba, 0);
   const totalBiayaOpsE = rekapCalculated.reduce((acc, curr) => acc + curr.biayaOps, 0);
-  const totalUntukShuF = rekapCalculated.reduce((acc, curr) => acc + curr.untukShu, 0); // F8
+  const totalUntukShuF = rekapCalculated.reduce((acc, curr) => acc + curr.untukShu, 0);
   const totalRapbH = rekapCalculated.reduce((acc, curr) => acc + curr.rapbNominal, 0);
 
-  // Calculations for Table 2: Biaya RAT (Page 3)
+  // Perhitungan Biaya RAT
   const calculatedRatExpenses = ratExpenses.map((r) => ({
     ...r,
     jumlah: r.nominal * r.qty,
   }));
-  const totalBiayaRat = calculatedRatExpenses.reduce((acc, curr) => acc + curr.jumlah, 0); // N18
-  const sisaUntukShu = Math.max(0, totalUntukShuF - totalBiayaRat); // F8 - N18
+  const totalBiayaRat = calculatedRatExpenses.reduce((acc, curr) => acc + curr.jumlah, 0);
 
-  // Calculations for Table 3: Persentase Pembagian SHU (Page 3)
+  // Single Source of Truth dari shuService:
+  // Alokasi pembagian hanya dari surplus usaha riil netShu > 0 (AD/ART Koperasi)
+  const distributableBasis = shuCalc.netShu > 0 ? shuCalc.netShu : 0;
+
+  // Alokasi Pembagian SHU sesuai AD/ART Koperasi
   const calculatedDistributions = distRules.map((rule) => {
-    const nominal = Math.round((rule.prosentase / 100) * sisaUntukShu);
+    const nominal = Math.round((rule.prosentase / 100) * distributableBasis);
     return {
       ...rule,
       nominal,
     };
   });
 
-  // Alokasi khusus "Untuk Anggota"
-  const ruleUntukAnggota = calculatedDistributions.find((r) => r.uraian.toLowerCase().includes('anggota'));
-  const alokasiShuAnggotaTotal = ruleUntukAnggota ? ruleUntukAnggota.nominal : Math.round(sisaUntukShu * 0.4);
+  // Alokasi Hak Anggota konsisten dari Single Source of Truth shuService
+  const alokasiShuAnggotaTotal = shuCalc.alokasiShuAnggotaTotal;
 
-  // Formula rincian SHU per Anggota dari PDF Page 5 & 6:
-  // 1. Jasa Usaha 90%: 90% * Alokasi SHU Anggota, dibagikan sama rata ke seluruh anggota Aktif dan Pasif
-  const poolJasaUsaha90 = Math.round(alokasiShuAnggotaTotal * 0.9);
-  // 2. Jasa Simpanan 5%: 5% * Alokasi SHU Anggota, dibagikan proporsional simpanan pokok & wajib
+  const poolJasaUsaha90 = Math.round(alokasiShuAnggotaTotal * 0.90);
   const poolJasaSimpanan5 = Math.round(alokasiShuAnggotaTotal * 0.05);
-  // 3. Jasa Pinjaman 5%: 5% * Alokasi SHU Anggota, dibagikan proporsional bunga pinjaman yang dibayar
   const poolJasaPinjaman5 = Math.round(alokasiShuAnggotaTotal * 0.05);
+  const eligibleMembersCount = Math.max(1, members.filter((m) => m.status === 'aktif' || m.status === 'pasif').length);
+  const jasaUsahaPerAnggota = Math.round(poolJasaUsaha90 / eligibleMembersCount);
 
-  const eligibleMembers = members.filter((m) => m.status === 'aktif' || m.status === 'pasif');
-  const countEligible = Math.max(1, eligibleMembers.length);
-  const jasaUsahaPerAnggota = Math.round(poolJasaUsaha90 / countEligible);
+  // Rincian SHU per Anggota menggunakan shuService
+  const memberShuDetails = calculateMembersShuDetails(
+    members,
+    savings,
+    repayments,
+    shuCalc.alokasiShuAnggotaTotal
+  );
 
-  // Total simpanan pokok + wajib seluruh anggota
-  let grandTotalSimpananPokokWajib = 0;
-  const memberSavingsMap: Record<string, number> = {};
-  members.forEach((m) => {
-    const s = calculateMemberSavings(m.id, savings);
-    const pokokWajib = s.pokok + s.wajib;
-    memberSavingsMap[m.id] = pokokWajib;
-    grandTotalSimpananPokokWajib += pokokWajib;
-  });
-  grandTotalSimpananPokokWajib = Math.max(1, grandTotalSimpananPokokWajib);
-
-  // Total bunga pinjaman yang telah disetor seluruh anggota di tahun berjalan
-  let grandTotalBungaPinjaman = 0;
-  const memberInterestMap: Record<string, number> = {};
-  repayments.forEach((r) => {
-    memberInterestMap[r.memberId] = (memberInterestMap[r.memberId] || 0) + r.interestAmount;
-    grandTotalBungaPinjaman += r.interestAmount;
-  });
-  // Fallback if no repayments yet recorded in demo data
-  if (grandTotalBungaPinjaman === 0) {
-    grandTotalBungaPinjaman = 1;
-  }
-
-  // Rincian SHU per Anggota
-  const memberShuDetails = members.map((m) => {
-    const isEligibleForJasaUsaha = m.status === 'aktif' || m.status === 'pasif';
-    const jasaUsaha = isEligibleForJasaUsaha ? jasaUsahaPerAnggota : 0;
-
-    const memberSimpanan = memberSavingsMap[m.id] || 0;
-    const jasaSimpanan = Math.round((memberSimpanan / grandTotalSimpananPokokWajib) * poolJasaSimpanan5);
-
-    const memberBunga = memberInterestMap[m.id] || 0;
-    const jasaPinjaman = grandTotalBungaPinjaman > 1
-      ? Math.round((memberBunga / grandTotalBungaPinjaman) * poolJasaPinjaman5)
-      : 0;
-
-    const totalShu = jasaUsaha + jasaSimpanan + jasaPinjaman;
-
-    return {
-      memberId: m.id,
-      name: m.name,
-      job: m.job,
-      status: m.status,
-      jasaUsaha,
-      jasaSimpanan,
-      jasaPinjaman,
-      totalShu,
-      simpananPokokWajib: memberSimpanan,
-      bungaPinjaman: memberBunga,
-    };
-  });
-
-  // Filtered member SHU list
+  // Filter list anggota
   const filteredMemberShu = memberShuDetails.filter((m) => {
     const matchSearch =
       m.name.toLowerCase().includes(searchMember.toLowerCase()) ||
@@ -298,11 +297,103 @@ export const ShuView: React.FC<ShuViewProps> = ({
     return matchSearch && matchStatus;
   });
 
-  // Total Rincian Anggota
   const sumTotalJasaUsaha = memberShuDetails.reduce((a, b) => a + b.jasaUsaha, 0);
   const sumTotalJasaSimpanan = memberShuDetails.reduce((a, b) => a + b.jasaSimpanan, 0);
   const sumTotalJasaPinjaman = memberShuDetails.reduce((a, b) => a + b.jasaPinjaman, 0);
   const grandTotalShuAnggota = memberShuDetails.reduce((a, b) => a + b.totalShu, 0);
+
+  // TAMPILAN KHUSUS ROLE ANGGOTA (DATA PRIBADI SAJA)
+  if (isAnggota) {
+    const myMemberId = (currentUser?.memberId || currentUser?.username || 'BJS-001').trim();
+    const myMember = members.find((m) => m.id.toLowerCase() === myMemberId.toLowerCase()) || {
+      id: myMemberId,
+      name: currentUser?.name || 'Anggota Koperasi',
+      nik: '-',
+      phone: '-',
+      job: currentUser?.unitKerja || 'Dinas',
+      address: 'Kabupaten Cirebon',
+      status: 'aktif',
+      joinDate: '2023-01-01',
+    };
+    const myShuDetail = memberShuDetails.find((m) => m.memberId.toLowerCase() === myMemberId.toLowerCase()) || {
+      memberId: myMemberId,
+      name: myMember.name,
+      job: myMember.job,
+      status: myMember.status,
+      simpananPokokWajib: 0,
+      bungaPinjaman: 0,
+      jasaUsaha: 0,
+      jasaSimpanan: 0,
+      jasaPinjaman: 0,
+      totalShu: 0,
+    };
+
+    return (
+      <div className="space-y-6">
+        <div className="bg-gradient-to-r from-blue-950 via-blue-900 to-red-950 rounded-2xl p-6 text-white shadow-md border border-blue-800/40">
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
+            <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-red-600 text-white shadow-xs">
+              SISA HASIL USAHA PRIBADI ANGGOTA
+            </span>
+            {isFromSupabase ? (
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-200 border border-emerald-400/40">
+                Supabase PostgreSQL
+              </span>
+            ) : (
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-200 border border-amber-400/40">
+                Cadangan Lokal
+              </span>
+            )}
+          </div>
+          <h2 className="text-xl font-black text-white">Hak SHU Anggota: {myMember.name}</h2>
+          <p className="text-xs text-blue-200 mt-1 font-mono">
+            No. Registrasi: {myMember.id} &bull; Status: {String(myMember.status).toUpperCase()} &bull; Tahun Buku {selectedYear}
+          </p>
+        </div>
+
+        {/* 4 KPI Cards Anggota */}
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+            <span className="text-xs font-bold uppercase text-slate-500">Total Hak SHU Saya</span>
+            <div className="text-2xl font-black font-mono text-emerald-700 mt-2">
+              {formatRupiah(myShuDetail.totalShu)}
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1">Tahun Buku {selectedYear}</div>
+          </div>
+          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+            <span className="text-xs font-bold uppercase text-slate-500">Hak Jasa Usaha</span>
+            <div className="text-2xl font-black font-mono text-blue-950 mt-2">
+              {formatRupiah(myShuDetail.jasaUsaha)}
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1">Porsi 90% hak anggota</div>
+          </div>
+          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+            <span className="text-xs font-bold uppercase text-slate-500">Hak Jasa Simpanan</span>
+            <div className="text-2xl font-black font-mono text-indigo-950 mt-2">
+              {formatRupiah(myShuDetail.jasaSimpanan)}
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1">Basis: {formatRupiah(myShuDetail.simpananPokokWajib)}</div>
+          </div>
+          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+            <span className="text-xs font-bold uppercase text-slate-500">Hak Jasa Pinjaman</span>
+            <div className="text-2xl font-black font-mono text-slate-900 mt-2">
+              {formatRupiah(myShuDetail.jasaPinjaman)}
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1">Basis bunga: {formatRupiah(myShuDetail.bungaPinjaman)}</div>
+          </div>
+        </div>
+
+        <div className="p-4 rounded-xl bg-blue-50 border border-blue-200 text-xs text-blue-900">
+          <p className="font-semibold">Informasi Transparansi SHU:</p>
+          <p className="mt-1 text-slate-600 leading-relaxed">
+            {shuCalc.netShu <= 0
+              ? 'Belum ada realisasi pembagian SHU untuk Tahun Buku berjalan karena belum ada aktivitas pendapatan operasional unit usaha atau jasa pinjaman yang dibukukan pada database koperasi.'
+              : 'Pembagian SHU dihitung secara proporsional sesuai Anggaran Rumah Tangga (ART) Koperasi Brama Jaya Sejahtera dan disahkan pada Rapat Anggota Tahunan (RAT).'}
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   // Edit Handlers for Pengurus
   const handleUpdateUnitLaba = (id: string, field: 'laba' | 'perputaranModal' | 'prosentaseRapb', value: number) => {
@@ -324,14 +415,12 @@ export const ShuView: React.FC<ShuViewProps> = ({
   };
 
   const handleResetToDefault = () => {
-    if (confirm('Kembalikan perhitungan SHU ke formula standar default sesuai ART?')) {
-      setUnitLabaList(defaultUnitLaba);
-      setRatExpenses(defaultRatExpenses);
-      setDistRules(defaultDistRules);
-      localStorage.removeItem(STORAGE_KEY_SHU_LABA);
-      localStorage.removeItem(STORAGE_KEY_SHU_RAT);
-      localStorage.removeItem(STORAGE_KEY_SHU_DIST);
-    }
+    setUnitLabaList(defaultUnitLaba);
+    setRatExpenses(defaultRatExpenses);
+    setDistRules(defaultDistRules);
+    localStorage.removeItem(STORAGE_KEY_SHU_LABA);
+    localStorage.removeItem(STORAGE_KEY_SHU_RAT);
+    localStorage.removeItem(STORAGE_KEY_SHU_DIST);
   };
 
   // EXPORT TO CSV / EXCEL
@@ -471,12 +560,17 @@ export const ShuView: React.FC<ShuViewProps> = ({
                 )
                 .join('')}
               <tr style="background: #f8fafc; font-weight: bold;">
-                <td colspan="3" style="padding: 5px 4px; border: 1px solid #cbd5e1;">TOTAL BIAYA RAT</td>
+                <td colspan="3" style="padding: 5px 4px; border: 1px solid #cbd5e1;">TOTAL ESTIMASI ANGGARAN RAT (RAB)</td>
                 <td style="padding: 5px 4px; border: 1px solid #cbd5e1; text-align: right; font-family: monospace; color: #b91c1c;">${formatRupiah(totalBiayaRat)}</td>
               </tr>
+              <tr style="background: #f1f5f9; font-size: 8.5px; color: #64748b;">
+                <td colspan="4" style="padding: 3px 4px; border: 1px solid #e2e8f0; font-style: italic;">
+                  *RAB Simulasi Pelaksanaan RAT tidak mengurangi SHU riil sampai dibukukan sah di kas (beban kas: ${formatRupiah(shuCalc.totalExpenses)}).
+                </td>
+              </tr>
               <tr style="background: #ecfdf5; font-weight: bold;">
-                <td colspan="3" style="padding: 5px 4px; border: 1px solid #cbd5e1; color: #065f46;">SISA UNTUK SHU (F - RAT)</td>
-                <td style="padding: 5px 4px; border: 1px solid #cbd5e1; text-align: right; font-family: monospace; color: #047857; font-size: 11px;">${formatRupiah(sisaUntukShu)}</td>
+                <td colspan="3" style="padding: 5px 4px; border: 1px solid #cbd5e1; color: #065f46;">DASAR ALOKASI SHU OPERASIONAL</td>
+                <td style="padding: 5px 4px; border: 1px solid #cbd5e1; text-align: right; font-family: monospace; color: #047857; font-size: 11px;">${formatRupiah(distributableBasis)}</td>
               </tr>
             </tbody>
           </table>
@@ -509,7 +603,7 @@ export const ShuView: React.FC<ShuViewProps> = ({
               <tr style="background: #f8fafc; font-weight: bold;">
                 <td style="padding: 5px 4px; border: 1px solid #cbd5e1;">TOTAL</td>
                 <td style="padding: 5px 4px; border: 1px solid #cbd5e1; text-align: center;">100%</td>
-                <td style="padding: 5px 4px; border: 1px solid #cbd5e1; text-align: right; font-family: monospace;">${formatRupiah(sisaUntukShu)}</td>
+                <td style="padding: 5px 4px; border: 1px solid #cbd5e1; text-align: right; font-family: monospace;">${formatRupiah(distributableBasis)}</td>
               </tr>
             </tbody>
           </table>
@@ -544,11 +638,20 @@ export const ShuView: React.FC<ShuViewProps> = ({
       {/* Top Header Card with Blue & Maroon Gradient */}
       <div className="bg-gradient-to-r from-blue-950 via-blue-900 to-red-950 rounded-2xl p-6 text-white shadow-md border border-blue-800/40 relative overflow-hidden flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div className="relative z-10">
-          <div className="flex items-center gap-2 mb-1.5">
+          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
             <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-red-600 text-white shadow-xs">
               SISA HASIL USAHA (SHU)
             </span>
-            <span className="text-xs text-blue-200 font-semibold">BJS Digital</span>
+            {isFromSupabase ? (
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-200 border border-emerald-400/40">
+                Supabase PostgreSQL
+              </span>
+            ) : (
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-200 border border-amber-400/40">
+                Cadangan Lokal
+              </span>
+            )}
+            <span className="text-xs text-blue-200 font-semibold">&bull; BJS Digital</span>
           </div>
           <h2 className="text-xl font-black tracking-tight text-white flex items-center gap-2">
             <Scale className="w-5 h-5 text-red-400" />
@@ -604,63 +707,86 @@ export const ShuView: React.FC<ShuViewProps> = ({
         </div>
       </div>
 
+      {/* Banner Status Aktivitas Ekonomi SHU */}
+      {!shuCalc.hasOperationalActivity ? (
+        <div className="p-4 rounded-xl bg-blue-50/80 border border-blue-200 text-blue-950 text-xs flex items-start gap-3 shadow-2xs">
+          <Info className="w-5 h-5 text-blue-700 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <p className="font-bold text-sm text-blue-950">Status Aktivitas Ekonomi & Realisasi SHU:</p>
+            <p className="text-slate-700 leading-relaxed">
+              Belum ada realisasi pendapatan operasional unit usaha atau pendapatan jasa pinjaman yang dibukukan pada database Supabase (Total Pendapatan Riil: Rp 0, Total Beban: Rp 0). Sesuai kaidah akuntansi yang objektif dan transparan, SHU Bersih Tahun Berjalan tercatat <strong>Rp 0</strong> dan tidak ada pembagian SHU fiktif.
+            </p>
+          </div>
+        </div>
+      ) : shuCalc.netShu < 0 ? (
+        <div className="p-4 rounded-xl bg-amber-50/80 border border-amber-200 text-amber-950 text-xs flex items-start gap-3 shadow-2xs">
+          <AlertCircle className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <p className="font-bold text-sm text-amber-950">Kondisi Defisit Operasional Tahun Berjalan:</p>
+            <p className="text-slate-700 leading-relaxed">
+              Total beban operasional melebihi pendapatan riil koperasi (SHU Bersih: {formatRupiah(shuCalc.netShu)}). Sesuai aturan akuntansi, nilai defisit ini tercermin secara jujur dan tidak ada alokasi SHU yang dapat dibagikan.
+            </p>
+          </div>
+        </div>
+      ) : null}
+
       {/* KPI Overview Summary */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Total Laba Unit Usaha */}
+        {/* Total Pendapatan Riil */}
         <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs">
           <div className="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-slate-500">
-            <span>Total Laba Unit</span>
+            <span>Total Pendapatan Riil</span>
             <span className="p-1.5 rounded-lg bg-blue-50 text-blue-900">
               <Coins className="w-4 h-4" />
             </span>
           </div>
           <div className="mt-3 text-2xl font-black font-mono text-slate-900">
-            {formatRupiah(totalLabaB)}
+            {formatRupiah(shuCalc.totalRevenue)}
           </div>
-          <p className="mt-1 text-xs text-slate-400">Dari 5 unit usaha koperasi</p>
+          <p className="mt-1 text-xs text-slate-400">Unit Usaha & Jasa Pinjaman</p>
         </div>
 
-        {/* Total Untuk SHU (Sebelum RAT) */}
+        {/* Realisasi SHU Bersih */}
         <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs">
           <div className="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-slate-500">
-            <span>Untuk SHU (F8)</span>
+            <span>SHU Bersih Riil</span>
             <span className="p-1.5 rounded-lg bg-indigo-50 text-indigo-900">
               <TrendingUp className="w-4 h-4" />
             </span>
           </div>
-          <div className="mt-3 text-2xl font-black font-mono text-indigo-950">
-            {formatRupiah(totalUntukShuF)}
+          <div className={`mt-3 text-2xl font-black font-mono ${shuCalc.netShu < 0 ? 'text-red-700' : 'text-indigo-950'}`}>
+            {formatRupiah(shuCalc.netShu)}
           </div>
-          <p className="mt-1 text-xs text-slate-400">Setelah dipotong ops 2.5%</p>
+          <p className="mt-1 text-xs text-slate-400">Pendapatan dikurangi beban</p>
         </div>
 
-        {/* Total Biaya RAT */}
+        {/* Total Beban Riil */}
         <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs">
           <div className="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-slate-500">
-            <span>Total Biaya RAT</span>
+            <span>Total Beban Riil</span>
             <span className="p-1.5 rounded-lg bg-red-50 text-red-800">
               <Receipt className="w-4 h-4" />
             </span>
           </div>
           <div className="mt-3 text-2xl font-black font-mono text-red-950">
-            {formatRupiah(totalBiayaRat)}
+            {formatRupiah(shuCalc.totalExpenses)}
           </div>
-          <p className="mt-1 text-xs text-slate-400">14 pos pengeluaran pleno</p>
+          <p className="mt-1 text-xs text-slate-400">Operasional tercatat di kas</p>
         </div>
 
         {/* Sisa SHU Dibagikan */}
         <div className="bg-white rounded-2xl border-2 border-emerald-500/40 p-5 shadow-xs bg-emerald-50/20">
           <div className="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-emerald-800">
-            <span>Sisa SHU Bersih</span>
+            <span>Alokasi Hak Anggota</span>
             <span className="p-1.5 rounded-lg bg-emerald-100 text-emerald-800">
               <CheckCircle2 className="w-4 h-4" />
             </span>
           </div>
           <div className="mt-3 text-2xl font-black font-mono text-emerald-700">
-            {formatRupiah(sisaUntukShu)}
+            {formatRupiah(shuCalc.alokasiShuAnggotaTotal)}
           </div>
           <p className="mt-1 text-xs text-emerald-800 font-semibold">
-            Porsi Anggota ({distRules.find((r) => r.id === '7')?.prosentase || 40}%): {formatRupiah(alokasiShuAnggotaTotal)}
+            Porsi 40% untuk {members.length} anggota
           </p>
         </div>
       </div>
@@ -823,13 +949,23 @@ export const ShuView: React.FC<ShuViewProps> = ({
               <div>
                 <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
                   <Receipt className="w-4 h-4 text-red-700" />
-                  1. Rincian Biaya RAT (Rapat Anggota Tahunan)
+                  1. Rencana Anggaran Biaya (RAB) Pelaksanaan RAT
                 </h3>
-                <p className="text-xs text-slate-500">14 pos biaya operasional pelaksanaan RAT</p>
+                <p className="text-xs text-slate-500">14 pos simulasi estimasi anggaran operasional RAT</p>
               </div>
               <span className="text-xs font-mono font-bold text-red-800 bg-red-50 px-2.5 py-1 rounded-lg">
-                Total: {formatRupiah(totalBiayaRat)}
+                Estimasi RAB: {formatRupiah(totalBiayaRat)}
               </span>
+            </div>
+
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-950 flex items-start gap-2.5">
+              <Info className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+              <div className="space-y-0.5">
+                <p className="font-bold text-amber-950">Status Anggaran Simulasi / Perencanaan Internal:</p>
+                <p className="text-slate-700 text-[11px] leading-relaxed">
+                  Tabel ini memuat Rencana Anggaran Biaya (RAB) pelaksanaan RAT. Sesuai kaidah akuntansi, anggaran ini <strong>BUKAN</strong> beban operasional riil buku kas dan <strong>TIDAK</strong> mengurangi SHU riil sampai dibukukan secara sah di <code className="font-mono bg-white px-1 py-0.5 rounded border border-amber-300 text-slate-900">cash_flow_records</code>.
+                </p>
+              </div>
             </div>
 
             <div className="overflow-x-auto">
@@ -878,19 +1014,27 @@ export const ShuView: React.FC<ShuViewProps> = ({
                     </tr>
                   ))}
                   <tr className="bg-slate-50 font-bold border-t border-slate-200">
-                    <td colSpan={3} className="py-3 px-3 uppercase text-slate-900">
-                      Total Biaya RAT (N18)
+                    <td colSpan={3} className="py-2.5 px-3 uppercase text-slate-900">
+                      Total Estimasi Anggaran RAT (RAB)
                     </td>
-                    <td className="py-3 px-3 text-right font-mono text-red-800 text-xs">
+                    <td className="py-2.5 px-3 text-right font-mono text-red-800 text-xs">
                       {formatRupiah(totalBiayaRat)}
                     </td>
                   </tr>
-                  <tr className="bg-emerald-50 font-black border-t border-emerald-200">
-                    <td colSpan={3} className="py-3 px-3 text-emerald-950 uppercase">
-                      SISA UNTUK SHU (F8 - N18)
+                  <tr className="bg-slate-100 font-semibold border-t border-slate-200 text-slate-700">
+                    <td colSpan={3} className="py-2 px-3 text-[11px]">
+                      Beban Operasional Riil Kas (cash_flow_records)
                     </td>
-                    <td className="py-3 px-3 text-right font-mono text-emerald-800 text-sm">
-                      {formatRupiah(sisaUntukShu)}
+                    <td className="py-2 px-3 text-right font-mono text-slate-800 text-xs">
+                      {formatRupiah(shuCalc.totalExpenses)}
+                    </td>
+                  </tr>
+                  <tr className="bg-emerald-50 font-black border-t border-emerald-200">
+                    <td colSpan={3} className="py-2.5 px-3 text-emerald-950 uppercase">
+                      Dasar Alokasi SHU Riil (shuService)
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-mono text-emerald-800 text-sm">
+                      {formatRupiah(distributableBasis)}
                     </td>
                   </tr>
                 </tbody>
@@ -909,7 +1053,7 @@ export const ShuView: React.FC<ShuViewProps> = ({
                 <p className="text-xs text-slate-500">Alokasi cadangan, pengurus, dan anggota</p>
               </div>
               <span className="text-xs font-mono font-bold text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-lg">
-                Basis: {formatRupiah(sisaUntukShu)}
+                Basis SHU Riil: {formatRupiah(distributableBasis)}
               </span>
             </div>
 
@@ -977,23 +1121,35 @@ export const ShuView: React.FC<ShuViewProps> = ({
             </div>
 
             {/* Explanatory Callout Box from PDF Scheme */}
-            <div className="p-4 rounded-xl bg-blue-50 border border-blue-100 text-xs space-y-2 text-slate-700">
-              <h4 className="font-bold text-blue-950 flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-blue-700" />
-                Skema Distribusi Porsi Hak Anggota ({formatRupiah(alokasiShuAnggotaTotal)}):
-              </h4>
-              <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-600">
-                <li>
-                  <strong>Jasa Usaha 90% ({formatRupiah(poolJasaUsaha90)}):</strong> Dibagikan sama rata ke seluruh anggota aktif & pasif ({formatRupiah(jasaUsahaPerAnggota)} / anggota).
-                </li>
-                <li>
-                  <strong>Jasa Simpanan 5% ({formatRupiah(poolJasaSimpanan5)}):</strong> Dibagikan proporsional simpanan pokok & wajib anggota.
-                </li>
-                <li>
-                  <strong>Jasa Pinjaman 5% ({formatRupiah(poolJasaPinjaman5)}):</strong> Dibagikan proporsional bunga pinjaman tahun berjalan.
-                </li>
-              </ul>
-            </div>
+            {distributableBasis <= 0 ? (
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-700 flex items-start gap-2.5">
+                <Info className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-bold text-slate-900">Belum Ada Surplus Usaha untuk Dialokasikan:</p>
+                  <p className="text-[11px] text-slate-600 mt-0.5 leading-relaxed">
+                    SHU Bersih riil tercatat {formatRupiah(shuCalc.netShu)} (karena belum ada transaksi unit usaha atau pendapatan jasa pinjaman di database). Seluruh alokasi pos pembagian dan hak anggota bernilai <strong>Rp 0</strong>.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="p-4 rounded-xl bg-blue-50 border border-blue-100 text-xs space-y-2 text-slate-700">
+                <h4 className="font-bold text-blue-950 flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-blue-700" />
+                  Skema Distribusi Porsi Hak Anggota ({formatRupiah(alokasiShuAnggotaTotal)}):
+                </h4>
+                <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-600">
+                  <li>
+                    <strong>Jasa Usaha 90% ({formatRupiah(poolJasaUsaha90)}):</strong> Dibagikan sama rata ke seluruh anggota aktif & pasif ({formatRupiah(jasaUsahaPerAnggota)} / anggota).
+                  </li>
+                  <li>
+                    <strong>Jasa Simpanan 5% ({formatRupiah(poolJasaSimpanan5)}):</strong> Dibagikan proporsional simpanan pokok & wajib anggota.
+                  </li>
+                  <li>
+                    <strong>Jasa Pinjaman 5% ({formatRupiah(poolJasaPinjaman5)}):</strong> Dibagikan proporsional bunga pinjaman tahun berjalan.
+                  </li>
+                </ul>
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -22,6 +22,8 @@ import {
   Users,
   CheckCircle2,
   FileSpreadsheet,
+  AlertCircle,
+  Scale,
 } from 'lucide-react';
 import {
   Member,
@@ -57,6 +59,10 @@ interface DashboardViewProps {
   onOpenRepayment: (loanId?: string) => void;
   userRole?: UserRole;
   currentUser?: AuthUser | null;
+  isLoading?: boolean;
+  error?: string | null;
+  isFromSupabase?: boolean;
+  onRefresh?: () => void;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -77,6 +83,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onOpenRepayment,
   userRole = 'pengurus',
   currentUser,
+  isLoading = false,
+  error = null,
+  isFromSupabase = false,
+  onRefresh,
 }) => {
   const isAnggota = userRole === 'anggota' || currentUser?.role === 'anggota';
   const myMemberId = (currentUser?.memberId || (isAnggota ? currentUser?.username : undefined) || 'BJS-001').trim();
@@ -199,14 +209,48 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   if (isAnggota) {
     return (
       <div className="space-y-6">
+        {/* Notifikasi Status Data & Loading */}
+        {error && (
+          <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center justify-between gap-3 shadow-2xs">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span className="font-medium">{error}</span>
+            </div>
+            {onRefresh && (
+              <button
+                onClick={onRefresh}
+                className="px-3 py-1 text-[11px] font-bold bg-amber-200 hover:bg-amber-300 rounded-lg text-amber-950 transition cursor-pointer"
+              >
+                Muat Ulang
+              </button>
+            )}
+          </div>
+        )}
+
+        {isLoading && (
+          <div className="p-3.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-950 text-xs flex items-center gap-2.5 shadow-2xs animate-pulse">
+            <div className="w-4 h-4 border-2 border-blue-800 border-t-transparent rounded-full animate-spin shrink-0" />
+            <span className="font-semibold">Menyinkronkan data dashboard dari Supabase PostgreSQL...</span>
+          </div>
+        )}
+
         {/* Member Personalized Banner */}
         <div className="bg-gradient-to-r from-blue-950 via-blue-900 to-red-950 rounded-2xl p-6 text-white shadow-md border border-blue-800/40 relative overflow-hidden flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div className="relative z-10">
-            <div className="flex items-center gap-2 mb-2">
+            <div className="flex items-center gap-2 mb-2 flex-wrap">
               <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-red-600 text-white shadow-xs">
                 PORTAL ANGGOTA KOPERASI
               </span>
               <span className="text-xs text-blue-200 font-semibold">BJS Digital</span>
+              {isFromSupabase ? (
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-200 border border-emerald-400/40">
+                  Supabase PostgreSQL
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-200 border border-amber-400/40">
+                  Cadangan Lokal
+                </span>
+              )}
             </div>
             <h2 className="text-xl sm:text-2xl font-black tracking-tight text-white">
               Selamat Datang, {myMember.name}
@@ -476,13 +520,47 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Notifikasi Status Data & Loading */}
+      {error && (
+        <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center justify-between gap-3 shadow-2xs">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+            <span className="font-medium">{error}</span>
+          </div>
+          {onRefresh && (
+            <button
+              onClick={onRefresh}
+              className="px-3 py-1 text-[11px] font-bold bg-amber-200 hover:bg-amber-300 rounded-lg text-amber-950 transition cursor-pointer"
+            >
+              Muat Ulang
+            </button>
+          )}
+        </div>
+      )}
+
+      {isLoading && (
+        <div className="p-3.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-950 text-xs flex items-center gap-2.5 shadow-2xs animate-pulse">
+          <div className="w-4 h-4 border-2 border-blue-800 border-t-transparent rounded-full animate-spin shrink-0" />
+          <span className="font-semibold">Menyinkronkan data dashboard dari Supabase PostgreSQL...</span>
+        </div>
+      )}
+
       {/* Top Banner with Blue & Maroon Gradient */}
       <div className="bg-gradient-to-r from-blue-950 via-blue-900 to-red-950 rounded-2xl p-5 text-white shadow-md border border-blue-800/40 relative overflow-hidden flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
         <div className="relative z-10">
-          <div className="flex items-center gap-2 mb-1.5">
+          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
             <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-red-600 text-white shadow-xs">
               KOPERASI BRAMA JAYA SEJAHTERA
             </span>
+            {isFromSupabase ? (
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-200 border border-emerald-400/40">
+                Supabase PostgreSQL
+              </span>
+            ) : (
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-200 border border-amber-400/40">
+                Cadangan Lokal
+              </span>
+            )}
           </div>
           <h2 className="text-xl font-black tracking-tight text-white">
             Dashboard Simpan Pinjam & Unit Usaha
@@ -528,6 +606,59 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <ShieldCheck className="w-4 h-4 text-blue-200" />
             <span>Mode Anggota: Akses Baca (Read-Only)</span>
           </div>
+        )}
+      </div>
+
+      {/* Rekonsiliasi Saldo Awal & Kas Koperasi Status Indicator */}
+      <div className="p-4 rounded-2xl bg-white border border-slate-200 shadow-xs flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-xs">
+        <div className="flex items-start sm:items-center gap-2.5">
+          <div className="p-2 rounded-xl bg-blue-50 text-blue-900 border border-blue-100 shrink-0 mt-0.5 sm:mt-0">
+            <Scale className="w-4 h-4 text-blue-800" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-bold text-slate-900">Rekonsiliasi Saldo Awal & Kas Koperasi:</span>
+              {summary.totalCash === summary.totalSavings.total && summary.totalCash > 0 ? (
+                <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                  Rekonsiliasi Lengkap (100% Seimbang)
+                </span>
+              ) : summary.totalCash > 0 ? (
+                <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-blue-100 text-blue-900 border border-blue-300 flex items-center gap-1">
+                  <Scale className="w-3 h-3 text-blue-600" />
+                  Rekonsiliasi Parsial
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-amber-100 text-amber-900 border border-amber-300 flex items-center gap-1">
+                  <AlertCircle className="w-3 h-3 text-amber-600" />
+                  Belum Direkonsiliasi
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              Kas & Bank Terverifikasi: <strong className="font-mono text-slate-800">{formatRupiah(summary.totalCash)}</strong>
+              {summary.totalCash > 0 && (
+                <span className="text-slate-600 font-medium ml-1">
+                  (Fisik: <strong className="font-mono text-slate-700">{formatRupiah(summary.totalCashFisik ?? 0)}</strong>, Bank: <strong className="font-mono text-slate-700">{formatRupiah(summary.totalCashBank ?? 0)}</strong>)
+                </span>
+              )}
+              {' '}&bull; Simpanan Historis: <strong className="font-mono text-slate-800">{formatRupiah(summary.totalSavings.total)}</strong>
+              {summary.totalSavings.total !== summary.totalCash && (
+                <span className="text-amber-800 font-semibold ml-1">
+                  (Selisih Terbuka: {formatRupiah(Math.abs(summary.totalSavings.total - summary.totalCash))})
+                </span>
+              )}
+            </p>
+          </div>
+        </div>
+        {userRole === 'pengurus' && (
+          <button
+            onClick={() => onNavigate('laporan')}
+            className="px-3.5 py-1.5 rounded-xl bg-blue-950 hover:bg-blue-900 text-white font-bold text-xs transition cursor-pointer shrink-0 shadow-xs flex items-center gap-1.5"
+          >
+            <span>Kelola di Laporan</span>
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
         )}
       </div>
 

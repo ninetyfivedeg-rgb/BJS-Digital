@@ -9,6 +9,7 @@ import {
   BusinessUnitKey,
   BusinessUnitReport,
   SimpanPinjamCashMutation,
+  AuditLog,
 } from '../types';
 import {
   INITIAL_MEMBERS,
@@ -30,6 +31,7 @@ const KEYS = {
   CASHFLOW: 'bjs_cashflow_data',
   BUSINESS_UNITS: 'bjs_business_units_data',
   SP_CASH_MUTATIONS: 'bjs_sp_cash_mutations_data',
+  AUDIT_LOGS: 'bjs_audit_logs_data',
 };
 
 const CLEAN_FLAG = 'bjs_financial_clean_v8';
@@ -222,6 +224,18 @@ export function saveSpCashMutations(records: SimpanPinjamCashMutation[]): void {
     localStorage.setItem(KEYS.SP_CASH_MUTATIONS, JSON.stringify(records));
   } catch (e) {
     console.error('Failed to save SP cash mutations', e);
+  }
+}
+
+export function loadAuditLogs(): AuditLog[] {
+  return getStoredOrDefault<AuditLog[]>(KEYS.AUDIT_LOGS, 'bjs_audit_logs', []);
+}
+
+export function saveAuditLogs(logs: AuditLog[]): void {
+  try {
+    localStorage.setItem(KEYS.AUDIT_LOGS, JSON.stringify(logs));
+  } catch (e) {
+    console.error('Failed to save audit logs', e);
   }
 }
 
@@ -530,20 +544,29 @@ export function computeCooperativeSummary(
 
   // Hitung Kas Koperasi untuk Simpan Pinjam
   // (Penerimaan simpanan, pencairan pinjaman, dan angsuran yang masuk)
+  // Dipisahkan antara Kas Tunai Fisik (kas_koperasi) dan Kas di Bank (kas_bank)
   let totalCash = 0;
+  let totalCashFisik = 0;
+  let totalCashBank = 0;
   for (const cf of cashFlow) {
     // Abaikan kategori biaya admin dari kas utama koperasi karena dialihkan ke operasional SP
     if (cf.category === 'biaya_admin' || cf.targetAccount === 'kas_operasional_sp') {
       continue;
     }
-    if (cf.type === 'masuk') totalCash += cf.amount;
-    else totalCash -= cf.amount;
+    const delta = cf.type === 'masuk' ? cf.amount : -cf.amount;
+    totalCash += delta;
+    if (cf.targetAccount === 'kas_bank') {
+      totalCashBank += delta;
+    } else {
+      totalCashFisik += delta;
+    }
   }
 
   for (const r of repayments) {
     const alreadyLogged = cashFlow.some((cf) => cf.referenceId === r.id);
     if (!alreadyLogged) {
       totalCash += r.totalPaid;
+      totalCashFisik += r.totalPaid;
     }
   }
 
@@ -583,6 +606,8 @@ export function computeCooperativeSummary(
 
   return {
     totalCash,
+    totalCashFisik,
+    totalCashBank,
     totalOperasionalSP,
     kasUnitSP,
     totalSavings: {

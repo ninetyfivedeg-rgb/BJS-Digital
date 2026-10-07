@@ -29,7 +29,7 @@ import { ReceiptData } from './ReceiptModal';
 interface SimpananViewProps {
   members: Member[];
   savings: SavingsTransaction[];
-  onAddSavings: (tx: Omit<SavingsTransaction, 'id'>) => void;
+  onAddSavings: (tx: Omit<SavingsTransaction, 'id'>) => Promise<{ success: boolean; message: string; data?: SavingsTransaction; error?: string }> | void;
   onShowReceipt: (receipt: ReceiptData) => void;
   initialSelectedMemberId?: string;
   activeSubTab?: 'pokok_wajib' | 'berjangka' | 'mutasi';
@@ -42,7 +42,11 @@ interface SimpananViewProps {
   currentUser?: AuthUser | null;
   onCompleteBerjangka?: (txId: string) => void;
   onDeleteSavings?: (txId: string) => void;
-  onBatchAddWajib?: (transactions: Omit<SavingsTransaction, 'id'>[]) => void;
+  onBatchAddWajib?: (transactions: Omit<SavingsTransaction, 'id'>[]) => Promise<{ success: boolean; message: string; data?: SavingsTransaction[]; error?: string }> | void;
+  isLoading?: boolean;
+  error?: string | null;
+  isFromSupabase?: boolean;
+  onRefresh?: () => void;
 }
 
 export const SimpananView: React.FC<SimpananViewProps> = ({
@@ -62,6 +66,10 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
   onCompleteBerjangka,
   onDeleteSavings,
   onBatchAddWajib,
+  isLoading = false,
+  error = null,
+  isFromSupabase = false,
+  onRefresh,
 }) => {
   // Navigation tabs:
   // 1) 'pokok_wajib' (Pilar 1: Ekuitas Pokok & Wajib)
@@ -110,6 +118,10 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
     setLocalBerjangkaModal(val);
     if (setIsBerjangkaModalOpen) setIsBerjangkaModalOpen(val);
   };
+
+  // Submit guard states for single source of truth Supabase write
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   // Withdraw Modal State (Pencairan Berjangka)
   const [isWithdrawModalOpen, setIsWithdrawModalOpen] = useState(false);
@@ -244,7 +256,8 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
     );
   };
 
-  const handleProcessCollectiveWajib = () => {
+  const handleProcessCollectiveWajib = async () => {
+    if (isSubmitting) return;
     if (selectedMemberIdsForWajib.length === 0) return;
     const now = new Date().toISOString().split('T')[0];
     const txs: Omit<SavingsTransaction, 'id'>[] = selectedMemberIdsForWajib.map((mid) => {
@@ -261,25 +274,48 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
       };
     });
 
-    if (onBatchAddWajib) {
-      onBatchAddWajib(txs);
-    } else {
-      txs.forEach((tx) => onAddSavings(tx));
-    }
+    setIsSubmitting(true);
+    setSubmitError(null);
 
-    setIsCollectiveWajibModalOpen(false);
-    onShowReceipt({
-      receiptNo: `KW-WJB-BULK-${Date.now().toString().slice(-6)}`,
-      title: `SETORAN KOLEKTIF SIMPANAN WAJIB (${collectiveMonth})`,
-      date: now,
-      memberId: 'KOLEKTIF',
-      memberName: `${selectedMemberIdsForWajib.length} Anggota (Potong Gaji)`,
-      amount: selectedMemberIdsForWajib.length * collectiveAmountPerPerson,
-      typeText: 'Setoran Simpanan Wajib Kolektif',
-      savingsType: 'wajib',
-      adminName: KOPERASI_OFFICIALS.bendahara,
-      notes: `Potong gaji kolektif simpanan wajib periode ${collectiveMonth} untuk ${selectedMemberIdsForWajib.length} anggota aktif.`,
-    });
+    try {
+      if (onBatchAddWajib) {
+        const res = await onBatchAddWajib(txs);
+        if (res && typeof res === 'object' && 'success' in res && !res.success) {
+          setSubmitError(res.message);
+          alert(res.message);
+          return;
+        }
+      } else {
+        for (const tx of txs) {
+          const res = await onAddSavings(tx);
+          if (res && typeof res === 'object' && 'success' in res && !res.success) {
+            setSubmitError(res.message);
+            alert(res.message);
+            return;
+          }
+        }
+      }
+
+      setIsCollectiveWajibModalOpen(false);
+      onShowReceipt({
+        receiptNo: `KW-WJB-BULK-${Date.now().toString().slice(-6)}`,
+        title: `SETORAN KOLEKTIF SIMPANAN WAJIB (${collectiveMonth})`,
+        date: now,
+        memberId: 'KOLEKTIF',
+        memberName: `${selectedMemberIdsForWajib.length} Anggota (Potong Gaji)`,
+        amount: selectedMemberIdsForWajib.length * collectiveAmountPerPerson,
+        typeText: 'Setoran Simpanan Wajib Kolektif',
+        savingsType: 'wajib',
+        adminName: KOPERASI_OFFICIALS.bendahara,
+        notes: `Potong gaji kolektif simpanan wajib periode ${collectiveMonth} untuk ${selectedMemberIdsForWajib.length} anggota aktif.`,
+      });
+    } catch (err: any) {
+      const msg = err.message || 'Terjadi kesalahan saat memproses setoran kolektif.';
+      setSubmitError(msg);
+      alert(msg);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   // Formal Bilyet Print helper via iframe print helper
@@ -387,55 +423,84 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
   };
 
   // Submit Handler: Regular Deposit (Pokok / Wajib)
-  const handleRegularDepositSubmit = (e: React.FormEvent) => {
+  const handleRegularDepositSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     const targetMemberId = regularDepositForm.memberId || members[0]?.id;
     const mem = members.find((m) => m.id === targetMemberId);
-    if (!mem || regularDepositForm.amount <= 0) {
-      alert('Pilih anggota dan masukkan nominal simpanan yang valid.');
+    if (!mem) {
+      alert('Pilih anggota koperasi yang valid.');
+      return;
+    }
+    const numAmount = Number(regularDepositForm.amount);
+    if (isNaN(numAmount) || numAmount <= 0) {
+      alert('Masukkan nominal simpanan yang valid (> Rp 0).');
       return;
     }
 
-    onAddSavings({
-      memberId: mem.id,
-      memberName: mem.name,
-      type: regularDepositForm.type,
-      txType: 'setor',
-      amount: Number(regularDepositForm.amount),
-      date: regularDepositForm.date,
-      adminName: regularDepositForm.adminName,
-      notes: regularDepositForm.notes || `Setoran Simpanan ${regularDepositForm.type.toUpperCase()}`,
-    });
+    setIsSubmitting(true);
+    setSubmitError(null);
 
-    setIsDepositModalOpen(false);
+    try {
+      const res = await onAddSavings({
+        memberId: mem.id,
+        memberName: mem.name,
+        type: regularDepositForm.type,
+        txType: 'setor',
+        amount: numAmount,
+        date: regularDepositForm.date,
+        adminName: regularDepositForm.adminName,
+        notes: regularDepositForm.notes || `Setoran Simpanan ${regularDepositForm.type.toUpperCase()}`,
+      });
 
-    // Show Receipt
-    onShowReceipt({
-      receiptNo: `KW-${regularDepositForm.type.toUpperCase().slice(0, 3)}-${Date.now().toString().slice(-6)}`,
-      title: `BUKTI SETORAN SIMPANAN ${regularDepositForm.type.toUpperCase()}`,
-      date: regularDepositForm.date,
-      memberId: mem.id,
-      memberName: mem.name,
-      amount: Number(regularDepositForm.amount),
-      typeText: `Simpanan ${regularDepositForm.type === 'pokok' ? 'Pokok' : 'Wajib'} Koperasi`,
-      notes: regularDepositForm.notes,
-      officerName: regularDepositForm.adminName,
-      breakdown: [
-        { label: 'Jenis Simpanan', value: `Simpanan ${regularDepositForm.type.toUpperCase()}` },
-        { label: 'Nomor Register', value: mem.id },
-        { label: 'Nama Anggota', value: mem.name },
-        { label: 'Tanggal Transaksi', value: formatDateIndo(regularDepositForm.date) },
-      ],
-    });
+      if (res && typeof res === 'object' && 'success' in res && !res.success) {
+        setSubmitError(res.message);
+        alert(res.message);
+        return;
+      }
+
+      setIsDepositModalOpen(false);
+
+      // Show Receipt
+      onShowReceipt({
+        receiptNo: `KW-${regularDepositForm.type.toUpperCase().slice(0, 3)}-${Date.now().toString().slice(-6)}`,
+        title: `BUKTI SETORAN SIMPANAN ${regularDepositForm.type.toUpperCase()}`,
+        date: regularDepositForm.date,
+        memberId: mem.id,
+        memberName: mem.name,
+        amount: numAmount,
+        typeText: `Simpanan ${regularDepositForm.type === 'pokok' ? 'Pokok' : 'Wajib'} Koperasi`,
+        notes: regularDepositForm.notes,
+        officerName: regularDepositForm.adminName,
+        breakdown: [
+          { label: 'Jenis Simpanan', value: `Simpanan ${regularDepositForm.type.toUpperCase()}` },
+          { label: 'Nomor Register', value: mem.id },
+          { label: 'Nama Anggota', value: mem.name },
+          { label: 'Tanggal Transaksi', value: formatDateIndo(regularDepositForm.date) },
+        ],
+      });
+    } catch (err: any) {
+      const msg = err.message || 'Terjadi kesalahan saat memproses transaksi simpanan.';
+      setSubmitError(msg);
+      alert(msg);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   // Submit Handler: Simpanan Berjangka 6%
-  const handleBerjangkaSubmit = (e: React.FormEvent) => {
+  const handleBerjangkaSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     const targetMemberId = berjangkaForm.memberId || members[0]?.id;
     const mem = members.find((m) => m.id === targetMemberId);
-    if (!mem || berjangkaForm.amount <= 0) {
-      alert('Pilih anggota dan tentukan nominal simpanan berjangka.');
+    if (!mem) {
+      alert('Pilih anggota yang valid.');
+      return;
+    }
+    const numAmount = Number(berjangkaForm.amount);
+    if (isNaN(numAmount) || numAmount <= 0) {
+      alert('Nominal simpanan berjangka harus lebih besar dari Rp 0.');
       return;
     }
 
@@ -447,14 +512,14 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
     const maturityDateStr = `${year + 1}-${month}-${day}`;
 
     const annualRate = 6.0;
-    const accruedInterest = Math.round(Number(berjangkaForm.amount) * 0.06);
+    const accruedInterest = Math.round(numAmount * 0.06);
 
     const newTx: Omit<SavingsTransaction, 'id'> = {
       memberId: mem.id,
       memberName: mem.name,
       type: 'berjangka',
       txType: 'setor',
-      amount: Number(berjangkaForm.amount),
+      amount: numAmount,
       date: berjangkaForm.date,
       adminName: berjangkaForm.adminName,
       termMonths: 12,
@@ -465,87 +530,164 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
       notes: berjangkaForm.notes || 'Simpanan Berjangka 12 Bulan (Bunga 6% per tahun dibayar saat RAT)',
     };
 
-    onAddSavings(newTx);
-    setBerjangkaModalState(false);
+    setIsSubmitting(true);
+    setSubmitError(null);
 
-    // Prompt Official Receipt
-    onShowReceipt({
-      receiptNo: `BILYET-BJS-${Date.now().toString().slice(-6)}`,
-      title: 'BUKTI PENEMPATAN SIMPANAN BERJANGKA (BILYET)',
-      date: berjangkaForm.date,
-      memberId: mem.id,
-      memberName: mem.name,
-      amount: Number(berjangkaForm.amount),
-      typeText: 'Simpanan Berjangka (Bunga 6,0% per Tahun, Tenor 12 Bulan)',
-      notes: `Jatuh tempo: ${formatDateIndo(maturityDateStr)}. Estimasi bunga ${formatRupiah(accruedInterest)} dibayarkan saat RAT.`,
-      officerName: berjangkaForm.adminName,
-      breakdown: [
-        { label: 'Nomor Register', value: mem.id },
-        { label: 'Nama Anggota', value: mem.name },
-        { label: 'Nominal Pokok', value: formatRupiah(Number(berjangkaForm.amount)) },
-        { label: 'Suku Bunga', value: '6,0% per Tahun' },
-        { label: 'Jangka Waktu', value: '1 Tahun (12 Bulan)' },
-        { label: 'Jatuh Tempo', value: formatDateIndo(maturityDateStr) },
-        { label: 'Estimasi Bunga RAT', value: formatRupiah(accruedInterest) },
-      ],
-    });
+    try {
+      const res = await onAddSavings(newTx);
+      if (res && typeof res === 'object' && 'success' in res && !res.success) {
+        setSubmitError(res.message);
+        alert(res.message);
+        return;
+      }
+
+      setBerjangkaModalState(false);
+
+      // Prompt Official Receipt
+      onShowReceipt({
+        receiptNo: `BILYET-BJS-${Date.now().toString().slice(-6)}`,
+        title: 'BUKTI PENEMPATAN SIMPANAN BERJANGKA (BILYET)',
+        date: berjangkaForm.date,
+        memberId: mem.id,
+        memberName: mem.name,
+        amount: numAmount,
+        typeText: 'Simpanan Berjangka (Bunga 6,0% per Tahun, Tenor 12 Bulan)',
+        notes: `Jatuh tempo: ${formatDateIndo(maturityDateStr)}. Estimasi bunga ${formatRupiah(accruedInterest)} dibayarkan saat RAT.`,
+        officerName: berjangkaForm.adminName,
+        breakdown: [
+          { label: 'Nomor Register', value: mem.id },
+          { label: 'Nama Anggota', value: mem.name },
+          { label: 'Nominal Pokok', value: formatRupiah(numAmount) },
+          { label: 'Suku Bunga', value: '6,0% per Tahun' },
+          { label: 'Jangka Waktu', value: '1 Tahun (12 Bulan)' },
+          { label: 'Jatuh Tempo', value: formatDateIndo(maturityDateStr) },
+          { label: 'Estimasi Bunga RAT', value: formatRupiah(accruedInterest) },
+        ],
+      });
+    } catch (err: any) {
+      const msg = err.message || 'Terjadi kesalahan saat menyimpan simpanan berjangka.';
+      setSubmitError(msg);
+      alert(msg);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   // Submit Handler: Pencairan Simpanan Berjangka
-  const handleWithdrawSubmit = (e: React.FormEvent) => {
+  const handleWithdrawSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     const targetMemberId = withdrawForm.memberId || members[0]?.id;
     const mem = members.find((m) => m.id === targetMemberId);
     if (!mem) return;
 
+    const numAmount = Number(withdrawForm.amount);
+    if (isNaN(numAmount) || numAmount <= 0) {
+      alert('Nominal penarikan harus lebih besar dari Rp 0.');
+      return;
+    }
+
     const memSavings = calculateMemberSavings(mem.id, savings);
-    if (withdrawForm.amount > memSavings.berjangka) {
+    if (numAmount > memSavings.berjangka) {
       alert(`Saldo Simpanan Berjangka anggota ini adalah ${formatRupiah(memSavings.berjangka)}. Penarikan tidak boleh melebihi saldo.`);
       return;
     }
 
-    onAddSavings({
-      memberId: mem.id,
-      memberName: mem.name,
-      type: 'berjangka',
-      txType: 'tarik',
-      amount: Number(withdrawForm.amount),
-      date: withdrawForm.date,
-      adminName: withdrawForm.adminName,
-      notes: withdrawForm.notes || 'Pencairan Simpanan Berjangka',
-    });
+    setIsSubmitting(true);
+    setSubmitError(null);
 
-    setIsWithdrawModalOpen(false);
+    try {
+      const res = await onAddSavings({
+        memberId: mem.id,
+        memberName: mem.name,
+        type: 'berjangka',
+        txType: 'tarik',
+        amount: numAmount,
+        date: withdrawForm.date,
+        adminName: withdrawForm.adminName,
+        notes: withdrawForm.notes || 'Pencairan Simpanan Berjangka',
+      });
 
-    onShowReceipt({
-      receiptNo: `KW-CAIR-${Date.now().toString().slice(-6)}`,
-      title: 'BUKTI PENCAIRAN SIMPANAN BERJANGKA',
-      date: withdrawForm.date,
-      memberId: mem.id,
-      memberName: mem.name,
-      amount: Number(withdrawForm.amount),
-      typeText: 'Pencairan Simpanan Berjangka',
-      notes: withdrawForm.notes,
-      officerName: withdrawForm.adminName,
-      breakdown: [
-        { label: 'Nomor Register', value: mem.id },
-        { label: 'Nama Anggota', value: mem.name },
-        { label: 'Jumlah Dicairkan', value: formatRupiah(Number(withdrawForm.amount)) },
-        { label: 'Sisa Saldo Berjangka', value: formatRupiah(memSavings.berjangka - Number(withdrawForm.amount)) },
-      ],
-    });
+      if (res && typeof res === 'object' && 'success' in res && !res.success) {
+        setSubmitError(res.message);
+        alert(res.message);
+        return;
+      }
+
+      setIsWithdrawModalOpen(false);
+
+      onShowReceipt({
+        receiptNo: `KW-CAIR-${Date.now().toString().slice(-6)}`,
+        title: 'BUKTI PENCAIRAN SIMPANAN BERJANGKA',
+        date: withdrawForm.date,
+        memberId: mem.id,
+        memberName: mem.name,
+        amount: numAmount,
+        typeText: 'Pencairan Simpanan Berjangka',
+        notes: withdrawForm.notes || 'Pencairan simpanan berjangka anggota',
+        officerName: withdrawForm.adminName,
+        breakdown: [
+          { label: 'Nomor Register', value: mem.id },
+          { label: 'Nama Anggota', value: mem.name },
+          { label: 'Nominal Dicairkan', value: formatRupiah(numAmount) },
+          { label: 'Tanggal Pencairan', value: formatDateIndo(withdrawForm.date) },
+        ],
+      });
+    } catch (err: any) {
+      const msg = err.message || 'Terjadi kesalahan saat memproses pencairan simpanan berjangka.';
+      setSubmitError(msg);
+      alert(msg);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
     <div className="space-y-6">
+      {/* Notifikasi Status Data & Loading */}
+      {error && (
+        <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center justify-between gap-3 shadow-2xs">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+            <span className="font-medium">{error}</span>
+          </div>
+          {onRefresh && (
+            <button
+              onClick={onRefresh}
+              className="px-3 py-1 text-[11px] font-bold bg-amber-200 hover:bg-amber-300 rounded-lg text-amber-950 transition cursor-pointer"
+            >
+              Muat Ulang
+            </button>
+          )}
+        </div>
+      )}
+
+      {isLoading && (
+        <div className="p-3.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 text-xs flex items-center gap-2.5 shadow-2xs animate-pulse">
+          <div className="w-4 h-4 border-2 border-blue-900 border-t-transparent rounded-full animate-spin shrink-0" />
+          <span className="font-semibold">Mengambil data transaksi simpanan dari database Supabase PostgreSQL...</span>
+        </div>
+      )}
+
       {/* Top Card: 2 Pilar Simpanan Overview */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {/* Total Terhimpun */}
         <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Total Simpanan Koperasi
-            </span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                Total Simpanan Koperasi
+              </span>
+              {isFromSupabase ? (
+                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-300">
+                  Supabase ({savings.length} Tx)
+                </span>
+              ) : (
+                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-300">
+                  Cadangan Lokal ({savings.length} Tx)
+                </span>
+              )}
+            </div>
             <div className="p-2 rounded-xl bg-blue-50 text-blue-900">
               <PiggyBank className="w-5 h-5" />
             </div>
@@ -1375,10 +1517,20 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-blue-900 hover:bg-blue-950 text-white text-xs font-bold shadow-md transition cursor-pointer flex items-center gap-1.5"
+                  disabled={isSubmitting}
+                  className="px-5 py-2 rounded-xl bg-blue-900 hover:bg-blue-950 text-white text-xs font-bold shadow-md transition cursor-pointer flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>Proses Setoran & Cetak Kwitansi</span>
+                  {isSubmitting ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>Menyimpan ke Server...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>Proses Setoran & Cetak Kwitansi</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>
@@ -1542,10 +1694,20 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-red-700 to-rose-900 hover:from-red-600 hover:to-rose-800 text-white text-xs font-bold shadow-md transition cursor-pointer flex items-center gap-2"
+                  disabled={isSubmitting}
+                  className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-red-700 to-rose-900 hover:from-red-600 hover:to-rose-800 text-white text-xs font-bold shadow-md transition cursor-pointer flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  <CheckCircle2 className="w-4 h-4 text-white" />
-                  <span>Simpan & Terbitkan Bilyet Berjangka</span>
+                  {isSubmitting ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>Menyimpan ke Server...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-4 h-4 text-white" />
+                      <span>Simpan & Terbitkan Bilyet Berjangka</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>
@@ -1652,9 +1814,17 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold shadow-md transition cursor-pointer"
+                  disabled={isSubmitting}
+                  className="px-5 py-2 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold shadow-md transition cursor-pointer flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Proses Pencairan & Cetak Bukti
+                  {isSubmitting ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>Memproses...</span>
+                    </>
+                  ) : (
+                    <span>Proses Pencairan & Cetak Bukti</span>
+                  )}
                 </button>
               </div>
             </form>
@@ -1948,10 +2118,17 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                 </button>
                 <button
                   onClick={handleProcessCollectiveWajib}
-                  disabled={selectedMemberIdsForWajib.length === 0}
-                  className="px-5 py-2 rounded-xl bg-blue-900 hover:bg-blue-950 text-white text-xs font-bold shadow-md transition cursor-pointer disabled:opacity-50"
+                  disabled={isSubmitting || selectedMemberIdsForWajib.length === 0}
+                  className="px-5 py-2 rounded-xl bg-blue-900 hover:bg-blue-950 text-white text-xs font-bold shadow-md transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
                 >
-                  Proses Potong Gaji ({selectedMemberIdsForWajib.length} Anggota)
+                  {isSubmitting ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>Menyimpan ke Server...</span>
+                    </>
+                  ) : (
+                    <span>Proses Potong Gaji ({selectedMemberIdsForWajib.length} Anggota)</span>
+                  )}
                 </button>
               </div>
             </div>

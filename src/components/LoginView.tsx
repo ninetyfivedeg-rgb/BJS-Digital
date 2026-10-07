@@ -23,20 +23,23 @@ export const LoginView: React.FC<LoginViewProps> = ({ members, onLoginSuccess })
     setPassword('');
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
     setIsLoading(true);
 
-    setTimeout(() => {
-      const result = authenticateUser(username, password, members);
+    try {
+      const result = await authenticateUser(username, password, members);
       setIsLoading(false);
       if (result.success && result.user) {
         onLoginSuccess(result.user);
       } else {
         setErrorMsg(result.error || 'Autentikasi gagal. Silakan periksa kembali username dan kata sandi Anda.');
       }
-    }, 200);
+    } catch {
+      setIsLoading(false);
+      setErrorMsg('Terjadi kesalahan saat menghubungi server autentikasi.');
+    }
   };
 
   return (

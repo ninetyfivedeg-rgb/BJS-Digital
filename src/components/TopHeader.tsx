@@ -54,6 +54,10 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
       title: 'Buku Kas & Laporan RAT',
       subtitle: 'Arus Kas Operasional & Neraca SAK ETAP Koperasi',
     },
+    audit_log: {
+      title: 'Audit Log & Rekam Jejak',
+      subtitle: 'Log Transparansi, Keamanan & Rekam Aktivitas Sistem',
+    },
   };
 
   const currentTabInfo = tabTitles[activeTab] || { title: 'BJS Digital', subtitle: 'Sistem Informasi Koperasi' };

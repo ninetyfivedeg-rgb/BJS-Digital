@@ -33,7 +33,8 @@ export type NavTab =
   | 'unit_usaha'
   | 'shu'
   | 'simulasi'
-  | 'laporan';
+  | 'laporan'
+  | 'audit_log';
 
 interface SidebarProps {
   activeTab: NavTab;
@@ -139,6 +140,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: 'laporan' as NavTab,
       label: 'Buku Kas & Laporan',
       icon: FileSpreadsheet,
+      hideForAnggota: true,
+    },
+    {
+      id: 'audit_log' as NavTab,
+      label: 'Audit Log & Rekam Jejak',
+      icon: ShieldAlert,
       hideForAnggota: true,
     },
   ];

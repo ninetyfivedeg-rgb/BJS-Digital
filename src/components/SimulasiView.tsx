@@ -13,14 +13,32 @@ import {
   PiggyBank,
   BadgePercent,
   Info,
+  Scale,
+  Users,
+  Search,
+  Sparkles,
 } from 'lucide-react';
-import { Member, SavingsTransaction, Loan } from '../types';
+import {
+  Member,
+  SavingsTransaction,
+  Loan,
+  LoanRepayment,
+  UserRole,
+  AuthUser,
+  CooperativeSummary,
+} from '../types';
 import { formatRupiah, formatNumber } from '../utils/formatters';
+import { calculateShuSimulation, calculateMembersShuDetails } from '../services/shuService';
 
 interface SimulasiViewProps {
   members: Member[];
   savings: SavingsTransaction[];
   loans: Loan[];
+  repayments?: LoanRepayment[];
+  userRole?: UserRole;
+  currentUser?: AuthUser | null;
+  summary?: CooperativeSummary;
+  isFromSupabase?: boolean;
   onApplyLoanToForm?: (amount: number, tenor: number) => void;
 }
 
@@ -28,9 +46,15 @@ export const SimulasiView: React.FC<SimulasiViewProps> = ({
   members,
   savings,
   loans,
+  repayments = [],
+  userRole = 'pengurus',
+  currentUser,
+  summary,
+  isFromSupabase = false,
   onApplyLoanToForm,
 }) => {
-  const [activeTab, setActiveTab] = useState<'pinjaman' | 'simpanan'>('pinjaman');
+  const isAnggota = userRole === 'anggota' || currentUser?.role === 'anggota';
+  const [activeTab, setActiveTab] = useState<'pinjaman' | 'simpanan' | 'shu'>('pinjaman');
 
   // --- 1. SIMULASI PINJAMAN STATE ---
   const [loanPlafon, setLoanPlafon] = useState<number>(5000000);
@@ -82,6 +106,53 @@ export const SimulasiView: React.FC<SimulasiViewProps> = ({
   const totalWajibAccumulated = wajibMonthly * wajibMonths;
   const totalSavingsAccumulated = pokokInitial + totalWajibAccumulated;
 
+  // --- 3. SIMULASI SHU WHAT-IF STATE ---
+  const [simulatedShu, setSimulatedShu] = useState<number>(100000000); // Default 100 Juta
+  const [searchMemberShu, setSearchMemberShu] = useState<string>('');
+  const [filterMemberStatus, setFilterMemberStatus] = useState<'semua' | 'aktif' | 'pasif'>('semua');
+
+  // Single Source of Truth perhitungan alokasi simulasi dari shuService
+  const shuSimResult = calculateShuSimulation(simulatedShu);
+
+  // Rincian pembagian per anggota menggunakan Single Source of Truth dari shuService
+  const simulatedMemberDetails = calculateMembersShuDetails(
+    members,
+    savings,
+    repayments,
+    shuSimResult.alokasiShuAnggotaTotal
+  );
+
+  const filteredSimulatedMembers = simulatedMemberDetails.filter((m) => {
+    const matchSearch =
+      m.name.toLowerCase().includes(searchMemberShu.toLowerCase()) ||
+      m.memberId.toLowerCase().includes(searchMemberShu.toLowerCase()) ||
+      m.job.toLowerCase().includes(searchMemberShu.toLowerCase());
+    const matchStatus = filterMemberStatus === 'semua' ? true : m.status === filterMemberStatus;
+    return matchSearch && matchStatus;
+  });
+
+  const grandTotalSimulatedShu = simulatedMemberDetails.reduce((sum, m) => sum + m.totalShu, 0);
+
+  // Data Anggota login untuk preview hak personal
+  const myMemberId = (currentUser?.memberId || currentUser?.username || 'BJS-001').trim();
+  const myMember = members.find((m) => m.id.toLowerCase() === myMemberId.toLowerCase()) || {
+    id: myMemberId,
+    name: currentUser?.name || 'Anggota Koperasi',
+    status: 'aktif',
+  };
+  const mySimDetail = simulatedMemberDetails.find(
+    (m) => m.memberId.toLowerCase() === myMemberId.toLowerCase()
+  ) || {
+    memberId: myMemberId,
+    name: myMember.name,
+    simpananPokokWajib: 0,
+    bungaPinjaman: 0,
+    jasaUsaha: 0,
+    jasaSimpanan: 0,
+    jasaPinjaman: 0,
+    totalShu: 0,
+  };
+
   return (
     <div className="space-y-6">
       {/* Header Banner with Blue & Maroon Gradient */}
@@ -102,29 +173,40 @@ export const SimulasiView: React.FC<SimulasiViewProps> = ({
           </p>
         </div>
 
-        {/* Tab Switcher: Pinjaman vs Simpanan */}
+        {/* Tab Switcher: Pinjaman vs Simpanan vs SHU */}
         <div className="flex items-center bg-white/10 backdrop-blur-xs p-1 rounded-xl border border-white/20">
           <button
             onClick={() => setActiveTab('pinjaman')}
-            className={`px-4 py-2 rounded-lg text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
+            className={`px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
               activeTab === 'pinjaman'
                 ? 'bg-white text-blue-950 shadow-md'
                 : 'text-blue-200 hover:text-white'
             }`}
           >
             <HandCoins className="w-4 h-4" />
-            <span>Simulasi Pinjaman</span>
+            <span>Pinjaman</span>
           </button>
           <button
             onClick={() => setActiveTab('simpanan')}
-            className={`px-4 py-2 rounded-lg text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
+            className={`px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
               activeTab === 'simpanan'
                 ? 'bg-white text-blue-950 shadow-md'
                 : 'text-blue-200 hover:text-white'
             }`}
           >
             <PiggyBank className="w-4 h-4" />
-            <span>Simulasi Simpanan</span>
+            <span>Simpanan</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('shu')}
+            className={`px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+              activeTab === 'shu'
+                ? 'bg-white text-blue-950 shadow-md'
+                : 'text-blue-200 hover:text-white'
+            }`}
+          >
+            <Scale className="w-4 h-4 text-emerald-600" />
+            <span>Simulasi SHU (What-If)</span>
           </button>
         </div>
       </div>
@@ -625,6 +707,556 @@ export const SimulasiView: React.FC<SimulasiViewProps> = ({
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* TAB 3: SIMULASI PEMBAGIAN SHU (WHAT-IF SCENARIO) */}
+      {activeTab === 'shu' && (
+        <div className="space-y-6">
+          {/* Disclaimer & Transparency Banner */}
+          <div className="p-4.5 rounded-2xl bg-gradient-to-r from-amber-50 via-amber-50/80 to-blue-50 border border-amber-200/90 shadow-2xs">
+            <div className="flex items-start gap-3">
+              <div className="p-2 rounded-xl bg-amber-100 text-amber-900 shrink-0 mt-0.5">
+                <Info className="w-5 h-5 text-amber-800" />
+              </div>
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-amber-200/90 text-amber-950 border border-amber-300">
+                    SIMULASI / WHAT-IF PERENCANAAN
+                  </span>
+                  {isFromSupabase ? (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                      Basis Data Anggota: Supabase PostgreSQL ({members.length} Anggota)
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-300">
+                      Cadangan Lokal
+                    </span>
+                  )}
+                </div>
+                <h3 className="text-sm font-bold text-slate-900">
+                  Kalkulator Simulasi Skenario Pembagian SHU (Sisa Hasil Usaha)
+                </h3>
+                <p className="text-xs text-slate-700 leading-relaxed">
+                  Modul ini adalah kalkulator perencanaan skenario (<em>What-If</em>). Angka yang dimasukkan di sini <strong>BUKAN</strong> data keuangan riil dan <strong>TIDAK MENGUBAH</strong> pembukuan ataupun database Supabase. SHU Riil koperasi saat ini tetap tercatat secara jujur sebesar <strong>Rp 0</strong>.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Comparison Cards: Real SHU vs Simulated SHU */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* 1. SHU Riil Supabase */}
+            <div className="bg-white rounded-2xl border-2 border-slate-200 p-5 shadow-xs">
+              <div className="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-slate-500">
+                <span>SHU Bersih Riil (Supabase)</span>
+                <span className="px-2 py-0.5 rounded text-[9px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  Data Aktual
+                </span>
+              </div>
+              <div className="mt-3 text-2xl font-black font-mono text-slate-900">
+                {formatRupiah(0)}
+              </div>
+              <p className="mt-1 text-xs text-slate-500">
+                Data SHU riil berasal dari Supabase PostgreSQL (Rp 0)
+              </p>
+            </div>
+
+            {/* 2. Target SHU Bersih Simulasi */}
+            <div className="bg-white rounded-2xl border-2 border-blue-900/30 p-5 shadow-xs bg-blue-50/20">
+              <div className="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-blue-900">
+                <span>SHU Bersih Simulasi</span>
+                <span className="px-2 py-0.5 rounded text-[9px] font-bold bg-blue-100 text-blue-900 border border-blue-200">
+                  Skenario What-If
+                </span>
+              </div>
+              <div className="mt-3 text-2xl font-black font-mono text-blue-950">
+                {formatRupiah(shuSimResult.simulatedNetShu)}
+              </div>
+              <p className="mt-1 text-xs text-blue-700 font-medium">
+                Target skenario yang disimulasikan
+              </p>
+            </div>
+
+            {/* 3. Alokasi Hak Anggota (40%) */}
+            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs">
+              <div className="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-emerald-800">
+                <span>Hak Anggota (40%)</span>
+                <span className="p-1 rounded-lg bg-emerald-50 text-emerald-700">
+                  <Users className="w-4 h-4" />
+                </span>
+              </div>
+              <div className="mt-3 text-2xl font-black font-mono text-emerald-700">
+                {formatRupiah(shuSimResult.alokasiShuAnggotaTotal)}
+              </div>
+              <p className="mt-1 text-xs text-slate-500">
+                Untuk {members.length} anggota koperasi
+              </p>
+            </div>
+
+            {/* 4. Cadangan Modal (30%) */}
+            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs">
+              <div className="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-indigo-900">
+                <span>Cadangan Modal (30%)</span>
+                <span className="p-1 rounded-lg bg-indigo-50 text-indigo-700">
+                  <TrendingUp className="w-4 h-4" />
+                </span>
+              </div>
+              <div className="mt-3 text-2xl font-black font-mono text-indigo-950">
+                {formatRupiah(shuSimResult.cadanganModal)}
+              </div>
+              <p className="mt-1 text-xs text-slate-500">
+                Penguatan modal koperasi
+              </p>
+            </div>
+          </div>
+
+          {/* Form Input Skenario Simulasi */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-3 border-b border-slate-100">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <Calculator className="w-4 h-4 text-blue-900" />
+                  Parameter Skenario Target SHU Bersih
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Masukkan target nominal SHU yang ingin disimulasikan pembagiannya berdasarkan AD/ART Koperasi
+                </p>
+              </div>
+              <span className="text-xs font-mono font-bold text-blue-900 bg-blue-50 px-3 py-1 rounded-lg">
+                Format: {formatRupiah(simulatedShu)}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5 items-center">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                  Nominal SHU Bersih Simulasi (Rp)
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min={0}
+                    step={5000000}
+                    value={simulatedShu}
+                    onChange={(e) => {
+                      const val = Math.max(0, Math.floor(Number(e.target.value) || 0));
+                      setSimulatedShu(val);
+                    }}
+                    placeholder="Contoh: 100000000"
+                    className="w-full px-4 py-3 rounded-xl border border-slate-300 text-base font-black font-mono text-slate-900 focus:outline-none focus:border-blue-900 focus:ring-2 focus:ring-blue-900/10"
+                  />
+                  <div className="absolute right-3 top-3 text-xs font-bold font-mono text-slate-400">
+                    IDR
+                  </div>
+                </div>
+              </div>
+
+              {/* Preset Buttons */}
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-1.5">
+                  Pilih Preset Skenario Cepat:
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { label: 'Rp 0', value: 0 },
+                    { label: '25 Juta', value: 25000000 },
+                    { label: '50 Juta', value: 50000000 },
+                    { label: '100 Juta', value: 100000000 },
+                    { label: '150 Juta', value: 150000000 },
+                    { label: '200 Juta', value: 200000000 },
+                  ].map((preset) => (
+                    <button
+                      key={preset.value}
+                      type="button"
+                      onClick={() => setSimulatedShu(preset.value)}
+                      className={`px-3 py-2 rounded-xl text-xs font-mono font-bold transition cursor-pointer ${
+                        simulatedShu === preset.value
+                          ? 'bg-blue-950 text-white shadow-xs'
+                          : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 2-Columns Distribution Details */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Column 1: 7 Pos Alokasi AD/ART (100%) */}
+            <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                    <Scale className="w-4 h-4 text-blue-900" />
+                    1. Pos Alokasi SHU Koperasi (100% AD/ART)
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Formula Single Source of Truth dari <code className="font-mono text-[11px] bg-slate-100 px-1 py-0.5 rounded">shuService.ts</code>
+                  </p>
+                </div>
+                <span className="text-xs font-mono font-bold text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-lg">
+                  Basis: {formatRupiah(shuSimResult.simulatedNetShu)}
+                </span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 text-slate-600 font-bold uppercase tracking-wider text-[10px] border-y border-slate-200">
+                    <tr>
+                      <th className="py-2.5 px-3">Pos Alokasi</th>
+                      <th className="py-2.5 px-3 text-center">Persentase</th>
+                      <th className="py-2.5 px-3 text-right">Nominal Skenario (Rp)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    <tr className="bg-emerald-50/60 font-bold text-emerald-950">
+                      <td className="py-2.5 px-3 flex items-center gap-1.5">
+                        <span>Hak Anggota Koperasi</span>
+                        <span className="text-[10px] bg-emerald-200 text-emerald-900 px-1.5 py-0.2 rounded-full font-bold">
+                          Hak Anggota
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 text-center font-mono">40%</td>
+                      <td className="py-2.5 px-3 text-right font-mono font-black text-emerald-800">
+                        {formatRupiah(shuSimResult.alokasiShuAnggotaTotal)}
+                      </td>
+                    </tr>
+                    <tr className="hover:bg-slate-50/70">
+                      <td className="py-2.5 px-3 font-medium text-slate-800">Cadangan Modal Koperasi</td>
+                      <td className="py-2.5 px-3 text-center font-mono">30%</td>
+                      <td className="py-2.5 px-3 text-right font-mono font-semibold text-slate-900">
+                        {formatRupiah(shuSimResult.cadanganModal)}
+                      </td>
+                    </tr>
+                    <tr className="hover:bg-slate-50/70">
+                      <td className="py-2.5 px-3 font-medium text-slate-800">Dana Pengurus</td>
+                      <td className="py-2.5 px-3 text-center font-mono">10%</td>
+                      <td className="py-2.5 px-3 text-right font-mono font-semibold text-slate-900">
+                        {formatRupiah(shuSimResult.danaPengurus)}
+                      </td>
+                    </tr>
+                    <tr className="hover:bg-slate-50/70">
+                      <td className="py-2.5 px-3 font-medium text-slate-800">Dana Pengawas</td>
+                      <td className="py-2.5 px-3 text-center font-mono">5%</td>
+                      <td className="py-2.5 px-3 text-right font-mono font-semibold text-slate-900">
+                        {formatRupiah(shuSimResult.danaPengawas)}
+                      </td>
+                    </tr>
+                    <tr className="hover:bg-slate-50/70">
+                      <td className="py-2.5 px-3 font-medium text-slate-800">Dana Sosial</td>
+                      <td className="py-2.5 px-3 text-center font-mono">5%</td>
+                      <td className="py-2.5 px-3 text-right font-mono font-semibold text-slate-900">
+                        {formatRupiah(shuSimResult.danaSosial)}
+                      </td>
+                    </tr>
+                    <tr className="hover:bg-slate-50/70">
+                      <td className="py-2.5 px-3 font-medium text-slate-800">Dana Pendidikan</td>
+                      <td className="py-2.5 px-3 text-center font-mono">5%</td>
+                      <td className="py-2.5 px-3 text-right font-mono font-semibold text-slate-900">
+                        {formatRupiah(shuSimResult.danaPendidikan)}
+                      </td>
+                    </tr>
+                    <tr className="hover:bg-slate-50/70">
+                      <td className="py-2.5 px-3 font-medium text-slate-800">Dana Pembangunan Daerah Kerja</td>
+                      <td className="py-2.5 px-3 text-center font-mono">5%</td>
+                      <td className="py-2.5 px-3 text-right font-mono font-semibold text-slate-900">
+                        {formatRupiah(shuSimResult.danaPembangunanKerja)}
+                      </td>
+                    </tr>
+                    <tr className="bg-slate-100/80 font-bold border-t-2 border-slate-300">
+                      <td className="py-3 px-3 uppercase text-slate-900">TOTAL PERSENTASE ALOKASI</td>
+                      <td className="py-3 px-3 text-center font-mono text-slate-900">100%</td>
+                      <td className="py-3 px-3 text-right font-mono text-emerald-800 text-sm">
+                        {formatRupiah(shuSimResult.totalAlokasi)}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Column 2: Rincian Porsi Hak Anggota (40%) */}
+            <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                    <Users className="w-4 h-4 text-emerald-700" />
+                    2. Rincian Distribusi Porsi Hak Anggota
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Skema alokasi hak anggota sesuai Anggaran Rumah Tangga (ART)
+                  </p>
+                </div>
+                <span className="text-xs font-mono font-bold text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-lg">
+                  Total: {formatRupiah(shuSimResult.alokasiShuAnggotaTotal)}
+                </span>
+              </div>
+
+              <div className="space-y-3">
+                {/* 1. Jasa Usaha */}
+                <div className="p-4 rounded-xl bg-blue-50/60 border border-blue-100 space-y-1">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="font-bold text-blue-950 flex items-center gap-1.5">
+                      <BadgePercent className="w-4 h-4 text-blue-700" />
+                      Jasa Usaha / Transaksi (90%)
+                    </span>
+                    <span className="font-mono font-black text-blue-900 text-sm">
+                      {formatRupiah(shuSimResult.poolJasaUsaha90)}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 leading-relaxed">
+                    Porsi 90% dari hak anggota (setara 36% dari total SHU) dibagikan rata/proporsional ke seluruh anggota aktif & pasif ({formatRupiah(Math.round(shuSimResult.poolJasaUsaha90 / Math.max(1, members.filter((m) => m.status === 'aktif' || m.status === 'pasif').length)))} / orang).
+                  </p>
+                </div>
+
+                {/* 2. Jasa Simpanan */}
+                <div className="p-4 rounded-xl bg-emerald-50/60 border border-emerald-100 space-y-1">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="font-bold text-emerald-950 flex items-center gap-1.5">
+                      <PiggyBank className="w-4 h-4 text-emerald-700" />
+                      Jasa Simpanan (5%)
+                    </span>
+                    <span className="font-mono font-black text-emerald-800 text-sm">
+                      {formatRupiah(shuSimResult.poolJasaSimpanan5)}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 leading-relaxed">
+                    Porsi 5% dari hak anggota (setara 2% dari total SHU) dibagikan proporsional berdasarkan saldo Simpanan Pokok + Simpanan Wajib riil masing-masing anggota.
+                  </p>
+                </div>
+
+                {/* 3. Jasa Pinjaman */}
+                <div className="p-4 rounded-xl bg-purple-50/60 border border-purple-100 space-y-1.5">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="font-bold text-purple-950 flex items-center gap-1.5">
+                      <HandCoins className="w-4 h-4 text-purple-700" />
+                      Jasa Pinjaman (5%)
+                    </span>
+                    <span className="font-mono font-black text-purple-900 text-sm">
+                      {formatRupiah(shuSimResult.poolJasaPinjaman5)}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 leading-relaxed">
+                    Porsi 5% dari hak anggota (setara 2% dari total SHU) dibagikan proporsional berdasarkan akumulasi bunga pinjaman riil yang telah dibayarkan anggota.
+                  </p>
+                  {repayments.length === 0 && (
+                    <div className="mt-1.5 p-2 rounded-lg bg-amber-50 border border-amber-200 text-[10px] text-amber-900 flex items-start gap-1.5">
+                      <Info className="w-3.5 h-3.5 text-amber-700 shrink-0 mt-0.5" />
+                      <span>
+                        <strong>Catatan Transparansi:</strong> Database Supabase saat ini mencatat 0 pinjaman dan 0 pelunasan bunga. Porsi pool Jasa Pinjaman ({formatRupiah(shuSimResult.poolJasaPinjaman5)}) tetap dihitung pada level pool, namun alokasi per anggota tercatat Rp 0 (tidak menggunakan data fiktif).
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Total Check */}
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex justify-between items-center text-xs font-bold text-slate-800">
+                <span>TOTAL HAK ANGGOTA (100%):</span>
+                <span className="font-mono text-emerald-800 font-black">
+                  {formatRupiah(
+                    shuSimResult.poolJasaUsaha90 +
+                      shuSimResult.poolJasaSimpanan5 +
+                      shuSimResult.poolJasaPinjaman5
+                  )}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* SPOTLIGHT KHUSUS ANGGOTA (Jika Login sebagai Anggota) */}
+          {isAnggota && (
+            <div className="bg-white rounded-2xl border-2 border-emerald-500/50 p-6 shadow-xs bg-emerald-50/20 space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-emerald-100">
+                <div>
+                  <span className="text-[10px] font-black uppercase tracking-wider bg-emerald-100 text-emerald-800 px-2.5 py-0.5 rounded-full">
+                    HAK SHU SIMULASI PRIBADI
+                  </span>
+                  <h3 className="text-base font-black text-slate-900 mt-1">
+                    Estimasi Hak Skenario Anda: {myMember.name} ({myMember.id})
+                  </h3>
+                </div>
+                <div className="text-right">
+                  <span className="text-[10px] text-slate-500 uppercase font-bold block">
+                    Total Estimasi Simulasi Saya
+                  </span>
+                  <span className="text-xl font-black font-mono text-emerald-700">
+                    {formatRupiah(mySimDetail.totalShu)}
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="p-3 bg-white rounded-xl border border-emerald-200">
+                  <span className="text-[11px] text-slate-500 font-bold block">1. Jasa Usaha</span>
+                  <span className="text-base font-black font-mono text-slate-900">
+                    {formatRupiah(mySimDetail.jasaUsaha)}
+                  </span>
+                </div>
+                <div className="p-3 bg-white rounded-xl border border-emerald-200">
+                  <span className="text-[11px] text-slate-500 font-bold block">2. Jasa Simpanan</span>
+                  <span className="text-base font-black font-mono text-slate-900">
+                    {formatRupiah(mySimDetail.jasaSimpanan)}
+                  </span>
+                  <span className="text-[10px] text-slate-400 block font-mono">
+                    Basis Simpanan: {formatRupiah(mySimDetail.simpananPokokWajib)}
+                  </span>
+                </div>
+                <div className="p-3 bg-white rounded-xl border border-emerald-200">
+                  <span className="text-[11px] text-slate-500 font-bold block">3. Jasa Pinjaman</span>
+                  <span className="text-base font-black font-mono text-slate-900">
+                    {formatRupiah(mySimDetail.jasaPinjaman)}
+                  </span>
+                  <span className="text-[10px] text-slate-400 block font-mono">
+                    Basis Bunga: {formatRupiah(mySimDetail.bungaPinjaman)}
+                  </span>
+                </div>
+              </div>
+
+              <p className="text-[11px] text-slate-500 italic">
+                *Catatan: Ini adalah proyeksi estimasi hak Anda jika koperasi mencatatkan surplus SHU {formatRupiah(simulatedShu)}. SHU riil Anda saat ini tetap tercatat Rp 0 sampai disahkan pada RAT.
+              </p>
+            </div>
+          )}
+
+          {/* TABEL SIMULASI RINCIAN PER ANGGOTA (217 Anggota) */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-3 border-b border-slate-100">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <Users className="w-4 h-4 text-blue-900" />
+                  Rincian Simulasi Hak SHU Per Anggota ({members.length} Anggota)
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Formula AD/ART: Jasa Usaha (90% sama rata anggota aktif/pasif), Jasa Simpanan (5% proporsional simpanan pokok+wajib), dan Jasa Pinjaman (5% bunga pinjaman).
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+                  <input
+                    type="text"
+                    placeholder="Cari anggota / no reg..."
+                    value={searchMemberShu}
+                    onChange={(e) => setSearchMemberShu(e.target.value)}
+                    className="pl-8 pr-3 py-1.5 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-blue-900 font-medium"
+                  />
+                </div>
+                <select
+                  value={filterMemberStatus}
+                  onChange={(e) => setFilterMemberStatus(e.target.value as any)}
+                  className="px-2.5 py-1.5 text-xs rounded-xl border border-slate-200 focus:outline-none font-medium bg-white text-slate-700"
+                >
+                  <option value="semua">Semua Status</option>
+                  <option value="aktif">Aktif Saja</option>
+                  <option value="pasif">Pasif Saja</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Status Distribusi Info Box */}
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-700 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div className="flex items-start sm:items-center gap-2">
+                <Info className="w-4 h-4 text-blue-900 shrink-0 mt-0.5 sm:mt-0" />
+                <span className="leading-relaxed">
+                  <strong>Status Distribusi Preview:</strong> Total Pool Hak Anggota = <strong>{formatRupiah(shuSimResult.alokasiShuAnggotaTotal)}</strong> | Total Terdistribusi = <strong>{formatRupiah(grandTotalSimulatedShu)}</strong>
+                  {grandTotalSimulatedShu < shuSimResult.alokasiShuAnggotaTotal && (
+                    <span className="text-amber-800 ml-1">
+                      (Selisih {formatRupiah(shuSimResult.alokasiShuAnggotaTotal - grandTotalSimulatedShu)} adalah pool Jasa Pinjaman 5% yang belum dibagikan karena riil bunga pinjaman di Supabase saat ini masih Rp 0).
+                    </span>
+                  )}
+                </span>
+              </div>
+              <span className="text-[10px] font-mono font-bold text-slate-600 bg-white px-2.5 py-1 rounded-lg border border-slate-200 shrink-0">
+                Data SHU riil: Supabase PostgreSQL (Rp 0)
+              </span>
+            </div>
+
+            <div className="overflow-x-auto max-h-96">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 text-slate-600 font-bold uppercase tracking-wider text-[10px] border-y border-slate-200 sticky top-0 z-10">
+                  <tr>
+                    <th className="py-2.5 px-3">No Reg</th>
+                    <th className="py-2.5 px-3">Nama Anggota</th>
+                    <th className="py-2.5 px-3 text-center">Status</th>
+                    <th className="py-2.5 px-3 text-right">Simpanan Pokok+Wajib Riil</th>
+                    <th className="py-2.5 px-3 text-right">Jasa Usaha (90%)</th>
+                    <th className="py-2.5 px-3 text-right">Jasa Simpanan (5%)</th>
+                    <th className="py-2.5 px-3 text-right">Jasa Pinjaman (5%)</th>
+                    <th className="py-2.5 px-3 text-right text-emerald-800 font-black">
+                      Total Simulasi SHU
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredSimulatedMembers.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} className="py-8 text-center text-slate-400">
+                        Tidak ada data anggota yang sesuai pencarian.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredSimulatedMembers.map((m) => (
+                      <tr key={m.memberId} className="hover:bg-slate-50/80 transition">
+                        <td className="py-2.5 px-3 font-mono font-bold text-slate-700">{m.memberId}</td>
+                        <td className="py-2.5 px-3 font-semibold text-slate-900">{m.name}</td>
+                        <td className="py-2.5 px-3 text-center">
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
+                              m.status === 'aktif'
+                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                : 'bg-slate-100 text-slate-600'
+                            }`}
+                          >
+                            {m.status}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono text-slate-800">
+                          {formatRupiah(m.simpananPokokWajib)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono text-slate-700">
+                          {formatRupiah(m.jasaUsaha)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono text-slate-700">
+                          {formatRupiah(m.jasaSimpanan)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono text-slate-700">
+                          {formatRupiah(m.jasaPinjaman)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono font-black text-emerald-700">
+                          {formatRupiah(m.totalShu)}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+                <tfoot className="bg-slate-100/90 font-bold border-t-2 border-slate-300 sticky bottom-0 z-10">
+                  <tr>
+                    <td colSpan={4} className="py-3 px-3 uppercase text-slate-900">
+                      TOTAL ESTIMASI SIMULASI HAK SELURUH ANGGOTA ({members.length})
+                    </td>
+                    <td className="py-3 px-3 text-right font-mono text-slate-900">
+                      {formatRupiah(simulatedMemberDetails.reduce((a, b) => a + b.jasaUsaha, 0))}
+                    </td>
+                    <td className="py-3 px-3 text-right font-mono text-slate-900">
+                      {formatRupiah(simulatedMemberDetails.reduce((a, b) => a + b.jasaSimpanan, 0))}
+                    </td>
+                    <td className="py-3 px-3 text-right font-mono text-slate-900">
+                      {formatRupiah(simulatedMemberDetails.reduce((a, b) => a + b.jasaPinjaman, 0))}
+                    </td>
+                    <td className="py-3 px-3 text-right font-mono font-black text-emerald-800 text-sm">
+                      {formatRupiah(grandTotalSimulatedShu)}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
         </div>
       )}
     </div>

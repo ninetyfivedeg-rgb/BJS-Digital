@@ -86,11 +86,14 @@ export const UNIT_KERJA_OPTIONS = [
 export type UnitKerja = (typeof UNIT_KERJA_OPTIONS)[number];
 
 export interface AuthUser {
+  id?: string;
   username: string;
   name: string;
   role: UserRole;
   memberId?: string;
   unitKerja?: string;
+  mustChangePassword?: boolean;
+  email?: string;
 }
 
 export type SavingsType = 'pokok' | 'wajib' | 'berjangka';
@@ -196,11 +199,39 @@ export interface CashFlowRecord {
     | 'biaya_admin'
     | 'operasional_sp'
     | 'unit_usaha'
-    | 'operasional';
+    | 'operasional'
+    | 'saldo_awal';
   amount: number;
   referenceId: string;
   description: string;
-  targetAccount?: 'kas_koperasi' | 'kas_operasional_sp' | 'kas_unit_usaha';
+  targetAccount?: 'kas_koperasi' | 'kas_operasional_sp' | 'kas_unit_usaha' | 'kas_bank';
+}
+
+// Rekonsiliasi Saldo Awal & Historical Savings
+export type ReconciliationStatus = 'draft' | 'verified' | 'reversed';
+
+export interface OpeningReconciliationData {
+  cutoffDate: string;
+  bankName: string;
+  accountNumber: string;
+  bankReference: string;
+  verifiedBank: number;
+  cashLocation: string;
+  cashBaNumber: string;
+  verifiedCash: number;
+  baNumber: string;
+  notes?: string;
+  status: ReconciliationStatus;
+  historicalSavings: number;
+  totalVerified: number;
+  difference: number;
+  recordedBy?: string;
+  recordedAt: string;
+  verifiedBy?: string;
+  verifiedAt?: string;
+  reversalReason?: string;
+  reversedBy?: string;
+  reversedAt?: string;
 }
 
 // 4 Unit Usaha
@@ -250,7 +281,9 @@ export interface BusinessUnitReport {
 }
 
 export interface CooperativeSummary {
-  totalCash: number; // Kas Koperasi untuk simpan pinjam
+  totalCash: number; // Kas Koperasi untuk simpan pinjam (Total Kas & Bank)
+  totalCashFisik?: number; // 1a. Kas Tunai Fisik (Brankas)
+  totalCashBank?: number; // 1b. Kas di Bank (Rekening Koran)
   totalOperasionalSP: number; // Kas Operasional Unit Simpan Pinjam (dari admin fee 1%)
   kasUnitSP?: number; // Saldo Kas Unit Simpan Pinjam (sinkron dari mutasi kas SP)
   totalSavings: {
@@ -281,4 +314,18 @@ export interface CooperativeSummary {
   totalExpenses?: number;
   activeMembersCount: number;
   activeLoansCount: number;
+}
+
+export interface AuditLog {
+  id: string;
+  userId?: string;
+  actorName?: string;
+  actorRole?: string;
+  action: string;
+  entityType?: string;
+  entityId?: string;
+  description: string;
+  oldData?: any;
+  newData?: any;
+  createdAt: string;
 }

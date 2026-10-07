@@ -39,6 +39,10 @@ interface AnggotaViewProps {
   onQuickLoan: (memberId: string) => void;
   userRole?: UserRole;
   currentUser?: AuthUser | null;
+  isLoading?: boolean;
+  error?: string | null;
+  isFromSupabase?: boolean;
+  onRefresh?: () => void;
 }
 
 export const AnggotaView: React.FC<AnggotaViewProps> = ({
@@ -52,6 +56,10 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
   onQuickLoan,
   userRole = 'pengurus',
   currentUser,
+  isLoading = false,
+  error = null,
+  isFromSupabase = false,
+  onRefresh,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'semua' | MemberStatus>('semua');
@@ -522,13 +530,22 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
 
         <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2 mb-2">
+            <div className="flex items-center gap-2 mb-2 flex-wrap">
               <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-red-600 text-white shadow-xs">
                 Buku Induk
               </span>
               <span className="text-xs text-blue-200 font-semibold">
                 KSP Brama Jaya Sejahtera (BJS Digital)
               </span>
+              {isFromSupabase ? (
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
+                  Supabase PostgreSQL ({members.length})
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-400/30">
+                  Cadangan Lokal ({members.length})
+                </span>
+              )}
             </div>
             <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight">
               Direktori 217 Anggota Koperasi
@@ -577,6 +594,31 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Notifikasi Status Data & Loading */}
+      {error && (
+        <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center justify-between gap-3 shadow-2xs">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+            <span className="font-medium">{error}</span>
+          </div>
+          {onRefresh && (
+            <button
+              onClick={onRefresh}
+              className="px-3 py-1 text-[11px] font-bold bg-amber-200 hover:bg-amber-300 rounded-lg text-amber-950 transition cursor-pointer"
+            >
+              Muat Ulang
+            </button>
+          )}
+        </div>
+      )}
+
+      {isLoading && (
+        <div className="p-3.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 text-xs flex items-center gap-2.5 shadow-2xs animate-pulse">
+          <div className="w-4 h-4 border-2 border-blue-900 border-t-transparent rounded-full animate-spin shrink-0" />
+          <span className="font-semibold">Mengambil data anggota dari tabel Supabase PostgreSQL...</span>
+        </div>
+      )}
 
       {/* Filter & Search Bar */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-3">

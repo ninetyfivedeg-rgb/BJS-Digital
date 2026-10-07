@@ -70,6 +70,10 @@ interface PinjamanViewProps {
   onDeleteSpCashMutation?: (id: string) => void;
   activeSubTab?: 'daftar_pinjaman' | 'kas_unit_sp';
   setActiveSubTab?: (tab: 'daftar_pinjaman' | 'kas_unit_sp') => void;
+  isLoading?: boolean;
+  error?: string | null;
+  isFromSupabase?: boolean;
+  onRefresh?: () => void;
 }
 
 export const PinjamanView: React.FC<PinjamanViewProps> = ({
@@ -94,6 +98,10 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
   onDeleteSpCashMutation,
   activeSubTab: controlledSubTab,
   setActiveSubTab: setControlledSubTab,
+  isLoading = false,
+  error = null,
+  isFromSupabase = false,
+  onRefresh,
 }) => {
   const isAnggota = userRole === 'anggota' || currentUser?.role === 'anggota';
   const activeMemberId = (currentUser?.memberId || (isAnggota ? currentUser?.username : undefined))?.trim().toLowerCase();
@@ -709,9 +717,34 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Notifikasi Status Data & Loading */}
+      {error && (
+        <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center justify-between gap-3 shadow-2xs">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+            <span className="font-medium">{error}</span>
+          </div>
+          {onRefresh && (
+            <button
+              onClick={onRefresh}
+              className="px-3 py-1 text-[11px] font-bold bg-amber-200 hover:bg-amber-300 rounded-lg text-amber-950 transition cursor-pointer"
+            >
+              Muat Ulang
+            </button>
+          )}
+        </div>
+      )}
+
+      {isLoading && (
+        <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-950 text-xs flex items-center gap-2.5 shadow-2xs animate-pulse">
+          <div className="w-4 h-4 border-2 border-emerald-700 border-t-transparent rounded-full animate-spin shrink-0" />
+          <span className="font-semibold">Mengambil data pinjaman dari tabel Supabase PostgreSQL...</span>
+        </div>
+      )}
+
       {/* Sub-Menu Navigasi Modul Pinjaman / Simpan Pinjam */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-3">
-        <div className="flex items-center gap-2 bg-slate-100 p-1.5 rounded-xl border border-slate-200/80">
+        <div className="flex items-center gap-2 bg-slate-100 p-1.5 rounded-xl border border-slate-200/80 flex-wrap">
           <button
             onClick={() => setActiveSubTab('daftar_pinjaman')}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
@@ -757,6 +790,16 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
               {formatRupiah(saldoKasUnitSP)}
             </span>
           </button>
+
+          {isFromSupabase ? (
+            <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-300">
+              Supabase ({loans.length} Pinjaman)
+            </span>
+          ) : (
+            <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-300">
+              Lokal ({loans.length} Pinjaman)
+            </span>
+          )}
         </div>
 
         {activeSubTab === 'kas_unit_sp' && userRole === 'pengurus' && (
