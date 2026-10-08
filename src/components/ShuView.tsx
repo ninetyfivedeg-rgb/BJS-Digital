@@ -276,7 +276,10 @@ export const ShuView: React.FC<ShuViewProps> = ({
   const poolJasaUsaha90 = Math.round(alokasiShuAnggotaTotal * 0.90);
   const poolJasaSimpanan5 = Math.round(alokasiShuAnggotaTotal * 0.05);
   const poolJasaPinjaman5 = Math.round(alokasiShuAnggotaTotal * 0.05);
-  const eligibleMembersCount = Math.max(1, members.filter((m) => m.status === 'aktif' || m.status === 'pasif').length);
+  const eligibleMembersCount = Math.max(
+    1,
+    members.filter((m) => m.status === 'aktif' || m.status === 'pasif').length
+  );
   const jasaUsahaPerAnggota = Math.round(poolJasaUsaha90 / eligibleMembersCount);
 
   // Rincian SHU per Anggota menggunakan shuService
@@ -287,8 +290,9 @@ export const ShuView: React.FC<ShuViewProps> = ({
     shuCalc.alokasiShuAnggotaTotal
   );
 
-  // Filter list anggota
+  // Filter list anggota penerima SHU (eksklusif anggota aktif/pasif, status 'keluar' tidak boleh muncul)
   const filteredMemberShu = memberShuDetails.filter((m) => {
+    if (m.status === 'keluar') return false;
     const matchSearch =
       m.name.toLowerCase().includes(searchMember.toLowerCase()) ||
       m.memberId.toLowerCase().includes(searchMember.toLowerCase()) ||
@@ -658,7 +662,7 @@ export const ShuView: React.FC<ShuViewProps> = ({
             Skema & Pembagian Sisa Hasil Usaha
           </h2>
           <p className="text-blue-100 text-xs mt-0.5 max-w-2xl">
-            Perhitungan SHU komprehensif 5 unit usaha, alokasi biaya RAT, dan pembagian ke {members.length} anggota koperasi.
+            Perhitungan SHU komprehensif 5 unit usaha, alokasi biaya RAT, dan pembagian ke {members.filter((m) => m.status !== 'keluar').length} anggota koperasi.
           </p>
         </div>
 
@@ -1178,7 +1182,7 @@ export const ShuView: React.FC<ShuViewProps> = ({
                     filterStatus === 'semua' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
                   }`}
                 >
-                  Semua ({members.length})
+                  Semua ({members.filter((m) => m.status !== 'keluar').length})
                 </button>
                 <button
                   onClick={() => setFilterStatus('aktif')}
@@ -1271,7 +1275,7 @@ export const ShuView: React.FC<ShuViewProps> = ({
                 {/* Total Row */}
                 <tr className="bg-slate-50/90 font-black border-t-2 border-slate-300">
                   <td colSpan={3} className="py-3 px-3 uppercase text-slate-900">
-                    TOTAL KONSOLIDASI SELURUH ANGGOTA ({members.length})
+                    TOTAL KONSOLIDASI SELURUH ANGGOTA ({members.filter((m) => m.status !== 'keluar').length})
                   </td>
                   <td className="py-3 px-3 text-right font-mono text-slate-900">
                     {formatRupiah(sumTotalJasaUsaha)}

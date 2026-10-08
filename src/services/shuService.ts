@@ -168,9 +168,13 @@ export function calculateMembersShuDetails(
   repayments: LoanRepayment[],
   alokasiShuAnggotaTotal: number
 ): MemberShuDetail[] {
-  // Jika tidak ada SHU yang dapat dibagikan, kembalikan nilai 0 dengan tetap menampilkan data simpanan riil
+  // ATURAN BISNIS: Anggota dengan status 'keluar' TIDAK BOLEH muncul sebagai penerima SHU
+  // dan TIDAK BOLEH dialokasikan bagian SHU apapun.
+  const eligibleMembers = members.filter((m) => m.status !== 'keluar');
+
+  // Jika tidak ada SHU yang dapat dibagikan, kembalikan nilai 0 hanya untuk anggota yang berhak (bukan 'keluar')
   if (alokasiShuAnggotaTotal <= 0) {
-    return members.map((m) => {
+    return eligibleMembers.map((m) => {
       const s = calculateMemberSavings(m.id, savings);
       const memberBunga = repayments
         .filter((r) => r.memberId === m.id)
@@ -196,14 +200,14 @@ export function calculateMembersShuDetails(
   const poolJasaSimpanan5 = Math.round(alokasiShuAnggotaTotal * 0.05);
   const poolJasaPinjaman5 = Math.round(alokasiShuAnggotaTotal * 0.05);
 
-  const eligibleMembers = members.filter((m) => m.status === 'aktif' || m.status === 'pasif');
-  const countEligible = Math.max(1, eligibleMembers.length);
+  const eligibleForJasaUsaha = eligibleMembers.filter((m) => m.status === 'aktif' || m.status === 'pasif');
+  const countEligible = Math.max(1, eligibleForJasaUsaha.length);
   const jasaUsahaPerAnggota = Math.round(poolJasaUsaha90 / countEligible);
 
-  // Total simpanan pokok + wajib seluruh anggota
+  // Total simpanan pokok + wajib seluruh anggota penerima SHU yang sah (bukan status keluar)
   let grandTotalSimpananPokokWajib = 0;
   const memberSavingsMap: Record<string, number> = {};
-  members.forEach((m) => {
+  eligibleMembers.forEach((m) => {
     const s = calculateMemberSavings(m.id, savings);
     const pokokWajib = s.pokok + s.wajib;
     memberSavingsMap[m.id] = pokokWajib;
@@ -211,16 +215,19 @@ export function calculateMembersShuDetails(
   });
   grandTotalSimpananPokokWajib = Math.max(1, grandTotalSimpananPokokWajib);
 
-  // Total bunga pinjaman yang telah dibayar seluruh anggota
+  // Total bunga pinjaman yang telah dibayar seluruh anggota penerima SHU yang sah (bukan status keluar)
   let grandTotalBungaPinjaman = 0;
   const memberInterestMap: Record<string, number> = {};
+  const eligibleMemberIdSet = new Set(eligibleMembers.map((m) => m.id));
   repayments.forEach((r) => {
-    const amt = Number(r.interestAmount) || 0;
-    memberInterestMap[r.memberId] = (memberInterestMap[r.memberId] || 0) + amt;
-    grandTotalBungaPinjaman += amt;
+    if (eligibleMemberIdSet.has(r.memberId)) {
+      const amt = Number(r.interestAmount) || 0;
+      memberInterestMap[r.memberId] = (memberInterestMap[r.memberId] || 0) + amt;
+      grandTotalBungaPinjaman += amt;
+    }
   });
 
-  return members.map((m) => {
+  return eligibleMembers.map((m) => {
     const isEligibleForJasaUsaha = m.status === 'aktif' || m.status === 'pasif';
     const jasaUsaha = isEligibleForJasaUsaha ? jasaUsahaPerAnggota : 0;
 

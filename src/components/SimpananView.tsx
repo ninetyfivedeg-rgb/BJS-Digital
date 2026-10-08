@@ -243,7 +243,7 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
   };
 
   const handleSelectAll = () => {
-    setSelectedMemberIdsForWajib(members.map((m) => m.id));
+    setSelectedMemberIdsForWajib(members.filter((m) => m.status !== 'keluar').map((m) => m.id));
   };
 
   const handleDeselectAll = () => {
@@ -914,6 +914,7 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {effectiveMembers
+                  .filter((m) => m.status !== 'keluar')
                   .filter((m) => {
                     const q = searchQuery.toLowerCase();
                     return m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q);
@@ -1363,11 +1364,13 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                   }
                   className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-900/20 focus:border-blue-900"
                 >
-                  {members.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.id} - {m.name} ({m.status === 'aktif' ? 'Aktif' : 'Pasif'})
-                    </option>
-                  ))}
+                  {members
+                    .filter((m) => m.status !== 'keluar')
+                    .map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.id} - {m.name} ({m.status === 'aktif' ? 'Aktif' : 'Pasif'})
+                      </option>
+                    ))}
                 </select>
               </div>
 
@@ -2020,7 +2023,7 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                     onClick={handleSelectAll}
                     className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 font-medium transition cursor-pointer text-[11px]"
                   >
-                    Pilih Semua ({members.length})
+                    Pilih Semua ({members.filter((m) => m.status !== 'keluar').length})
                   </button>
                   <button
                     onClick={handleDeselectAll}
@@ -2044,6 +2047,7 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
 
               <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[260px] overflow-y-auto divide-y divide-slate-100">
                 {members
+                  .filter((m) => m.status !== 'keluar')
                   .filter((m) => {
                     const q = collectiveSearchQuery.toLowerCase();
                     return m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q);

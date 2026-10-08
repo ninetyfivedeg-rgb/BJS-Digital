@@ -123,6 +123,7 @@ export const SimulasiView: React.FC<SimulasiViewProps> = ({
   );
 
   const filteredSimulatedMembers = simulatedMemberDetails.filter((m) => {
+    if (m.status === 'keluar') return false;
     const matchSearch =
       m.name.toLowerCase().includes(searchMemberShu.toLowerCase()) ||
       m.memberId.toLowerCase().includes(searchMemberShu.toLowerCase()) ||
@@ -1129,7 +1130,7 @@ export const SimulasiView: React.FC<SimulasiViewProps> = ({
               <div>
                 <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
                   <Users className="w-4 h-4 text-blue-900" />
-                  Rincian Simulasi Hak SHU Per Anggota ({members.length} Anggota)
+                  Rincian Simulasi Hak SHU Per Anggota ({members.filter((m) => m.status !== 'keluar').length} Anggota)
                 </h3>
                 <p className="text-xs text-slate-500">
                   Formula AD/ART: Jasa Usaha (90% sama rata anggota aktif/pasif), Jasa Simpanan (5% proporsional simpanan pokok+wajib), dan Jasa Pinjaman (5% bunga pinjaman).
