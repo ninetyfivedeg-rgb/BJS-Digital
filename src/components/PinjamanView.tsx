@@ -1867,33 +1867,76 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
             </div>
 
             <div className="p-6 max-h-[70vh] overflow-y-auto space-y-5">
-              {/* Summary of this loan */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs">
-                <div>
-                  <span className="text-slate-500 block">Plafon Pinjaman</span>
-                  <span className="font-mono font-bold text-slate-900 text-sm">
-                    {formatRupiah(selectedLoanDetail.amount)}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-slate-500 block">Tenor & Bunga</span>
-                  <span className="font-semibold text-slate-800">
-                    {selectedLoanDetail.tenorMonths} Bln ({selectedLoanDetail.interestRatePerMonth}% / bln)
-                  </span>
-                </div>
-                <div>
-                  <span className="text-slate-500 block">Angsuran per Bulan</span>
-                  <span className="font-mono font-bold text-emerald-800 text-sm">
-                    {formatRupiah(selectedLoanDetail.monthlyTotal)}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-slate-500 block">Sisa Pokok</span>
-                  <span className="font-mono font-bold text-rose-700 text-sm">
-                    {formatRupiah(calculateLoanRemaining(selectedLoanDetail).remainingPrincipal)}
-                  </span>
-                </div>
-              </div>
+              {/* Summary of this loan - Menampilkan 7 Metrik Finansial Sesuai Jadwal Resmi */}
+              {(() => {
+                const rem = calculateLoanRemaining(selectedLoanDetail);
+                return (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+                      <div>
+                        <span className="text-slate-500 block text-[11px]">Pokok Awal (Plafon)</span>
+                        <span className="font-mono font-bold text-slate-900 text-sm">
+                          {formatRupiah(rem.pokokAwal)}
+                        </span>
+                        <span className="text-[10px] text-slate-500 block mt-0.5">
+                          {selectedLoanDetail.tenorMonths} Bln &bull; {selectedLoanDetail.interestRatePerMonth}% / bln
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block text-[11px]">Total Bunga</span>
+                        <span className="font-mono font-bold text-blue-900 text-sm">
+                          {formatRupiah(rem.totalBunga)}
+                        </span>
+                        <span className="text-[10px] text-slate-500 block mt-0.5">
+                          Sesuai Jadwal Angsuran
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block text-[11px]">Total Kewajiban</span>
+                        <span className="font-mono font-bold text-slate-900 text-sm">
+                          {formatRupiah(rem.totalKewajiban)}
+                        </span>
+                        <span className="text-[10px] text-slate-500 block mt-0.5">
+                          Pokok + Total Bunga
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block text-[11px]">Total Sudah Dibayar</span>
+                        <span className="font-mono font-bold text-emerald-800 text-sm">
+                          {formatRupiah(rem.paidTotal)}
+                        </span>
+                        <span className="text-[10px] text-emerald-700 block mt-0.5 font-medium">
+                          Pokok: {formatRupiah(rem.paidPrincipal)} &bull; Bunga: {formatRupiah(rem.paidInterest)}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 rounded-xl bg-amber-50/70 border border-amber-200 text-xs">
+                      <div>
+                        <span className="text-amber-900 font-semibold block text-[11px]">Outstanding Pokok</span>
+                        <span className="font-mono font-bold text-rose-700 text-sm">
+                          {formatRupiah(rem.remainingPrincipal)}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-amber-900 font-semibold block text-[11px]">Outstanding Bunga</span>
+                        <span className="font-mono font-bold text-rose-700 text-sm">
+                          {formatRupiah(rem.remainingInterest)}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-amber-950 font-black block text-[11px]">Outstanding Total</span>
+                        <span className="font-mono font-black text-rose-900 text-base">
+                          {formatRupiah(rem.remainingTotal)}
+                        </span>
+                        <span className="text-[10px] text-slate-500 block mt-0.5">
+                          Outstanding Pokok + Bunga
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Schedule Table */}
               <div className="border border-slate-200 rounded-xl overflow-hidden">

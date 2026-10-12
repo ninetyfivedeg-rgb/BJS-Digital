@@ -6,7 +6,7 @@ import {
   BusinessUnitTxType,
   AuthUser,
 } from '../types';
-import { loadBusinessTransactions as loadLocalFallbackBusinessTransactions } from '../utils/storage';
+import { loadBusinessTransactions as loadLocalFallbackBusinessTransactions, sanitizeUuid } from '../utils/storage';
 import { formatRupiah } from '../utils/formatters';
 
 export interface BusinessUnitRecord {
@@ -77,10 +77,20 @@ export function mapSupabaseBusinessUnit(row: any): BusinessUnitRecord {
  * - created_at: string
  */
 export function mapSupabaseBuTxToBusinessUnitTransaction(row: any): BusinessUnitTransaction {
+  let resolvedUnitId = (row.unit_id as BusinessUnitId) || undefined;
+  let resolvedUnitKey = (row.unit_key as BusinessUnitKey) || undefined;
+
+  // Fallback mapping jika kolom berupa business_unit_id
+  if (!resolvedUnitId && row.business_unit_id) {
+    if (typeof row.business_unit_id === 'string' && !sanitizeUuid(row.business_unit_id)) {
+      resolvedUnitId = row.business_unit_id as BusinessUnitId;
+    }
+  }
+
   return {
     id: row.id,
-    unitId: (row.unit_id as BusinessUnitId) || undefined,
-    unitKey: (row.unit_key as BusinessUnitKey) || undefined,
+    unitId: resolvedUnitId,
+    unitKey: resolvedUnitKey,
     date: row.transaction_date || row.created_at || new Date().toISOString(),
     type: (row.type as BusinessUnitTxType) || 'penjualan',
     title: row.title || undefined,
@@ -89,7 +99,7 @@ export function mapSupabaseBuTxToBusinessUnitTransaction(row: any): BusinessUnit
     partyName: row.party_name || undefined,
     notes: row.notes || undefined,
     recordedBy: row.recorded_by || undefined,
-    createdBy: row.created_by || undefined,
+    createdBy: row.created_by || row.user_id || undefined,
   };
 }
 
@@ -255,8 +265,11 @@ export async function createBusinessUnitTransaction(
   const randomSuffix = Math.random().toString(36).substring(2, 6).toUpperCase();
   const generatedId = `TRX-${input.unitId.toUpperCase().slice(0, 4)}-${datePart}-${Date.now().toString().slice(-4)}-${randomSuffix}`;
 
-  // 8. Bentuk Payload Sesuai Kolom Supabase `business_unit_transactions`
-  const insertPayload = {
+  // 8. Ambil UUID pengguna sah untuk created_by (bukan string role "pengurus")
+  const validUserUuid = sanitizeUuid(currentUser.id);
+
+  // 9. Bentuk Payload Sesuai Kolom Eksak Supabase `business_unit_transactions`
+  const insertPayload: any = {
     id: generatedId,
     unit_id: input.unitId,
     unit_key: unitKey,
@@ -272,7 +285,7 @@ export async function createBusinessUnitTransaction(
       currentUser.name ||
       currentUser.username ||
       'Pengurus BJS',
-    created_by: currentUser.username || currentUser.id || 'Pengurus BJS',
+    ...(validUserUuid ? { created_by: validUserUuid } : {}),
     created_at: new Date().toISOString(),
   };
 
@@ -303,8 +316,7 @@ export async function createBusinessUnitTransaction(
 
     try {
       const auditPayload = {
-        id: `LOG-BU-${Date.now()}`,
-        user_id: currentUser.id || undefined,
+        user_id: validUserUuid || undefined,
         actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
         actor_role: currentUser.role || 'pengurus',
         action: 'CREATE_BUSINESS_UNIT_TRANSACTION',
@@ -381,8 +393,7 @@ export async function deleteBusinessUnitTransaction(
 
     try {
       const auditPayload = {
-        id: `LOG-DEL-BU-${Date.now()}`,
-        user_id: currentUser.id || undefined,
+        user_id: sanitizeUuid(currentUser.id) || undefined,
         actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
         actor_role: currentUser.role || 'pengurus',
         action: 'DELETE_BUSINESS_UNIT_TRANSACTION',

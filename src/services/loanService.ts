@@ -1,6 +1,10 @@
 import { supabase } from '../lib/supabase';
 import { Loan, LoanRepayment, LoanStatus, LoanScheduleItem, Member, AuthUser } from '../types';
-import { loadLoans as loadLocalFallbackLoans, loadRepayments as loadLocalFallbackRepayments } from '../utils/storage';
+import {
+  loadLoans as loadLocalFallbackLoans,
+  loadRepayments as loadLocalFallbackRepayments,
+  sanitizeUuid,
+} from '../utils/storage';
 import { formatRupiah } from '../utils/formatters';
 
 export interface CreateLoanInput {
@@ -476,21 +480,29 @@ export async function createLoan(
         amount: adminFee,
         reference_id: loanId,
         description: `Biaya Administrasi Pinjaman ${loanId} - ${cleanMemberName}`,
-        target_account: 'kas_koperasi',
+        target_account: 'kas_operasional_sp',
         created_at: new Date().toISOString(),
       };
 
-      const { error: cfErr } = await supabase.from('cash_flow_records').insert([disbursementCF, adminFeeCF]);
-      if (cfErr) {
-        console.warn('Peringatan: Gagal mencatat kas pencairan pinjaman:', cfErr.message);
+      // Cek agar tidak terjadi pencatatan kas ganda
+      const { data: existingCf } = await supabase
+        .from('cash_flow_records')
+        .select('id')
+        .eq('reference_id', loanId);
+
+      if (!existingCf || existingCf.length === 0) {
+        const { error: cfErr } = await supabase.from('cash_flow_records').insert([disbursementCF, adminFeeCF]);
+        if (cfErr) {
+          console.warn('Peringatan: Gagal mencatat kas pencairan pinjaman:', cfErr.message);
+        }
       }
     }
 
     // 12. Catat ke `audit_logs`
     try {
+      const validUserUuid = sanitizeUuid(currentUser.id);
       const auditPayload = {
-        id: `LOG-LOAN-${Date.now()}`,
-        user_id: currentUser.id || undefined,
+        user_id: validUserUuid || undefined,
         actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
         actor_role: currentUser.role || 'pengurus',
         action: 'CREATE_LOAN',
@@ -706,16 +718,23 @@ export async function createLoanRepayment(
       created_at: new Date().toISOString(),
     };
 
-    const { error: cfErr } = await supabase.from('cash_flow_records').insert([cfPrincipal, cfInterest]);
-    if (cfErr) {
-      console.warn('Peringatan: Gagal mencatat kas masuk angsuran:', cfErr.message);
+    const { data: existingRepayCf } = await supabase
+      .from('cash_flow_records')
+      .select('id')
+      .eq('reference_id', repaymentId);
+
+    if (!existingRepayCf || existingRepayCf.length === 0) {
+      const { error: cfErr } = await supabase.from('cash_flow_records').insert([cfPrincipal, cfInterest]);
+      if (cfErr) {
+        console.warn('Peringatan: Gagal mencatat kas masuk angsuran:', cfErr.message);
+      }
     }
 
     // 10. Catat ke `audit_logs`
     try {
+      const validUserUuid = sanitizeUuid(currentUser.id);
       const auditPayload = {
-        id: `LOG-REP-${Date.now()}`,
-        user_id: currentUser.id || undefined,
+        user_id: validUserUuid || undefined,
         actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
         actor_role: currentUser.role || 'pengurus',
         action: 'CREATE_LOAN_REPAYMENT',
@@ -864,17 +883,25 @@ export async function approveLoan(
         amount: adminFee,
         reference_id: loanId,
         description: `Biaya Administrasi Pinjaman ${loanId} - ${memberName}`,
-        target_account: 'kas_koperasi',
+        target_account: 'kas_operasional_sp',
         created_at: new Date().toISOString(),
       };
 
-      await supabase.from('cash_flow_records').insert([disbursementCF, adminFeeCF]);
+      // Cek agar tidak menduplikasi mutasi kas pencairan pinjaman jika sudah tercatat
+      const { data: existingCf } = await supabase
+        .from('cash_flow_records')
+        .select('id')
+        .eq('reference_id', loanId);
+
+      if (!existingCf || existingCf.length === 0) {
+        await supabase.from('cash_flow_records').insert([disbursementCF, adminFeeCF]);
+      }
     }
 
     try {
+      const validUserUuid = sanitizeUuid(currentUser.id);
       const auditPayload = {
-        id: `LOG-APPR-${Date.now()}`,
-        user_id: currentUser.id || undefined,
+        user_id: validUserUuid || undefined,
         actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
         actor_role: currentUser.role || 'pengurus',
         action: 'APPROVE_LOAN',
@@ -921,9 +948,9 @@ export async function rejectLoan(
     }
 
     try {
+      const validUserUuid = sanitizeUuid(currentUser.id);
       const auditPayload = {
-        id: `LOG-REJ-${Date.now()}`,
-        user_id: currentUser.id || undefined,
+        user_id: validUserUuid || undefined,
         actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
         actor_role: currentUser.role || 'pengurus',
         action: 'REJECT_LOAN',
@@ -942,7 +969,7 @@ export async function rejectLoan(
 }
 
 /**
- * Menghapus pinjaman (beserta jadwal dan angsurannya) dari database.
+ * Menghapus pinjaman (beserta jadwal, angsuran, dan mutasi kas terkait) dari database.
  */
 export async function deleteLoan(
   loanId: string,
@@ -959,6 +986,9 @@ export async function deleteLoan(
   try {
     await supabase.from('loan_schedules').delete().eq('loan_id', loanId);
     await supabase.from('loan_repayments').delete().eq('loan_id', loanId);
+    // Bersihkan juga entri arus kas pencairan pinjaman terkait jika ada
+    await supabase.from('cash_flow_records').delete().eq('reference_id', loanId);
+
     const { error } = await supabase.from('loans').delete().eq('id', loanId);
 
     if (error) {
@@ -966,9 +996,9 @@ export async function deleteLoan(
     }
 
     try {
+      const validUserUuid = sanitizeUuid(currentUser.id);
       const auditPayload = {
-        id: `LOG-DEL-LOAN-${Date.now()}`,
-        user_id: currentUser.id || undefined,
+        user_id: validUserUuid || undefined,
         actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
         actor_role: currentUser.role || 'pengurus',
         action: 'DELETE_LOAN',

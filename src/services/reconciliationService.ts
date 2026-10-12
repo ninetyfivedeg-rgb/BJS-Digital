@@ -1,6 +1,7 @@
 import { supabase } from '../lib/supabase';
 import { AuthUser, OpeningReconciliationData, CashFlowRecord } from '../types';
 import { formatRupiah } from '../utils/formatters';
+import { sanitizeUuid } from '../utils/storage';
 
 export interface ReconciliationActionResult {
   success: boolean;
@@ -142,9 +143,9 @@ export async function saveOpeningReconciliationDraft(
       recordedAt: new Date().toISOString(),
     };
 
+    const validUserUuid = sanitizeUuid(currentUser?.id);
     const auditPayload = {
-      id: `LOG-DRAFT-${Date.now()}`,
-      user_id: currentUser?.id || undefined,
+      user_id: validUserUuid || undefined,
       actor_name: currentUser?.name || currentUser?.username || 'Pengurus/Bendahara BJS',
       actor_role: currentUser?.role || 'pengurus',
       action: 'VERIFY_OPENING_BALANCE',
@@ -284,9 +285,9 @@ export async function verifyOpeningReconciliation(
     }
 
     // 3. Catat status VERIFIED ke audit_logs
+    const validVerifyUuid = sanitizeUuid(currentUser?.id);
     const auditPayload = {
-      id: `LOG-VERIFY-${nowTimestamp}`,
-      user_id: currentUser?.id || undefined,
+      user_id: validVerifyUuid || undefined,
       actor_name: currentUser?.name || currentUser?.username || 'Pengurus/Bendahara BJS',
       actor_role: currentUser?.role || 'pengurus',
       action: 'VERIFY_OPENING_BALANCE',
@@ -395,9 +396,9 @@ export async function reverseOpeningReconciliation(
     };
 
     // Catat log reversal ke audit_logs
+    const validRevUuid = sanitizeUuid(currentUser?.id);
     const auditPayload = {
-      id: `LOG-REVERSAL-${nowTimestamp}`,
-      user_id: currentUser?.id || undefined,
+      user_id: validRevUuid || undefined,
       actor_name: currentUser?.name || currentUser?.username || 'Pengurus/Bendahara BJS',
       actor_role: currentUser?.role || 'pengurus',
       action: 'REVERSE_OPENING_BALANCE',

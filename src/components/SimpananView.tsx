@@ -102,14 +102,36 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
   const [berjangkaStatusFilter, setBerjangkaStatusFilter] = useState<'semua' | 'aktif' | 'selesai'>('semua');
 
   // Collective Wajib Modal (Potong Gaji)
+  const MONTH_OPTIONS = [
+    'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+    'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember',
+  ];
+  const currentCalendarYear = new Date().getFullYear();
+  const YEAR_OPTIONS = [
+    currentCalendarYear - 2,
+    currentCalendarYear - 1,
+    currentCalendarYear,
+    currentCalendarYear + 1,
+    currentCalendarYear + 2,
+  ].map(String);
+
   const [isCollectiveWajibModalOpen, setIsCollectiveWajibModalOpen] = useState(false);
   const [selectedMemberIdsForWajib, setSelectedMemberIdsForWajib] = useState<string[]>([]);
   const [collectiveAmountPerPerson, setCollectiveAmountPerPerson] = useState(50000);
-  const [collectiveMonth, setCollectiveMonth] = useState(() => {
+  const [selectedCollectiveMonth, setSelectedCollectiveMonth] = useState(() => {
     const d = new Date();
-    return `${d.toLocaleString('id-ID', { month: 'long' })} ${d.getFullYear()}`;
+    return MONTH_OPTIONS[d.getMonth()] || 'Januari';
   });
+  const [selectedCollectiveYear, setSelectedCollectiveYear] = useState(() => String(new Date().getFullYear()));
+  const collectiveMonth = `${selectedCollectiveMonth} ${selectedCollectiveYear}`;
   const [collectiveSearchQuery, setCollectiveSearchQuery] = useState('');
+
+  // Anggota yang sudah memiliki simpanan wajib untuk periode ini
+  const alreadyPaidMemberIds = new Set(
+    savings
+      .filter((s) => s.type === 'wajib' && s.notes && s.notes.toLowerCase().includes(collectiveMonth.toLowerCase()))
+      .map((s) => s.memberId)
+  );
 
   // Dedicated Berjangka Modal local state fallback if not controlled by parent
   const [localBerjangkaModal, setLocalBerjangkaModal] = useState(false);
@@ -230,16 +252,20 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
       );
     });
 
-  // Open Collective Wajib Modal with all Active members pre-selected
+  // Open Collective Wajib Modal with unpaid Active members pre-selected
   const handleOpenCollectiveWajib = () => {
-    const activeMemberIds = members.filter((m) => m.status === 'aktif').map((m) => m.id);
-    setSelectedMemberIdsForWajib(activeMemberIds);
+    const activeUnpaidIds = members
+      .filter((m) => m.status === 'aktif' && !alreadyPaidMemberIds.has(m.id))
+      .map((m) => m.id);
+    setSelectedMemberIdsForWajib(activeUnpaidIds);
     setIsCollectiveWajibModalOpen(true);
   };
 
   const handleSelectActiveOnly = () => {
-    const activeMemberIds = members.filter((m) => m.status === 'aktif').map((m) => m.id);
-    setSelectedMemberIdsForWajib(activeMemberIds);
+    const activeUnpaidIds = members
+      .filter((m) => m.status === 'aktif' && !alreadyPaidMemberIds.has(m.id))
+      .map((m) => m.id);
+    setSelectedMemberIdsForWajib(activeUnpaidIds);
   };
 
   const handleSelectAll = () => {
@@ -913,13 +939,26 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {effectiveMembers
-                  .filter((m) => m.status !== 'keluar')
-                  .filter((m) => {
-                    const q = searchQuery.toLowerCase();
-                    return m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q);
-                  })
-                  .map((m) => {
+                {(() => {
+                  const displayMembers = effectiveMembers
+                    .filter((m) => m.status !== 'keluar')
+                    .filter((m) => {
+                      const q = searchQuery.toLowerCase();
+                      return m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q);
+                    });
+                  if (displayMembers.length === 0) {
+                    return (
+                      <tr>
+                        <td
+                          colSpan={userRole === 'pengurus' ? 7 : 6}
+                          className="py-8 text-center text-slate-400"
+                        >
+                          Tidak ada anggota yang cocok dengan pencarian.
+                        </td>
+                      </tr>
+                    );
+                  }
+                  return displayMembers.map((m) => {
                     const memSavings = calculateMemberSavings(m.id, savings);
                     const totalEkuitas = memSavings.pokok + memSavings.wajib;
                     return (
@@ -963,7 +1002,8 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                         )}
                       </tr>
                     );
-                  })}
+                  });
+                })()}
               </tbody>
             </table>
           </div>
@@ -1577,11 +1617,13 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                   }
                   className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-red-900/20 focus:border-red-900"
                 >
-                  {members.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.id} - {m.name}
-                    </option>
-                  ))}
+                  {members
+                    .filter((m) => m.status !== 'keluar')
+                    .map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.id} - {m.name}
+                      </option>
+                    ))}
                 </select>
               </div>
 
@@ -1990,15 +2032,34 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
             </div>
 
             <div className="p-6 space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 bg-slate-50 rounded-xl border border-slate-200 text-xs">
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">Periode Potong Gaji</label>
-                  <input
-                    type="text"
-                    value={collectiveMonth}
-                    onChange={(e) => setCollectiveMonth(e.target.value)}
-                    className="w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-900 bg-white focus:outline-none"
-                  />
+                  <label className="block font-bold text-slate-700 mb-1">Bulan Potong Gaji</label>
+                  <select
+                    value={selectedCollectiveMonth}
+                    onChange={(e) => setSelectedCollectiveMonth(e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  >
+                    {MONTH_OPTIONS.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Tahun</label>
+                  <select
+                    value={selectedCollectiveYear}
+                    onChange={(e) => setSelectedCollectiveYear(e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  >
+                    {YEAR_OPTIONS.map((y) => (
+                      <option key={y} value={y}>
+                        {y}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">Besaran per Anggota (Rp)</label>
@@ -2006,7 +2067,7 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                     type="number"
                     value={collectiveAmountPerPerson}
                     onChange={(e) => setCollectiveAmountPerPerson(Number(e.target.value) || 0)}
-                    className="w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-mono font-bold text-slate-900 bg-white focus:outline-none"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-mono font-bold text-slate-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-600"
                   />
                 </div>
               </div>
@@ -2017,7 +2078,7 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                     onClick={handleSelectActiveOnly}
                     className="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 hover:bg-emerald-200 font-bold transition cursor-pointer text-[11px]"
                   >
-                    Hanya Anggota Aktif ({members.filter((m) => m.status === 'aktif').length})
+                    Pilih Anggota Belum Bayar ({members.filter((m) => m.status === 'aktif' && !alreadyPaidMemberIds.has(m.id)).length})
                   </button>
                   <button
                     onClick={handleSelectAll}
@@ -2054,13 +2115,14 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                   })
                   .map((m) => {
                     const isChecked = selectedMemberIdsForWajib.includes(m.id);
+                    const isAlreadyPaid = alreadyPaidMemberIds.has(m.id);
                     return (
                       <div
                         key={m.id}
                         onClick={() => handleToggleMemberCheck(m.id)}
                         className={`p-2.5 flex items-center justify-between text-xs cursor-pointer transition ${
                           isChecked ? 'bg-blue-50/50' : 'hover:bg-slate-50'
-                        }`}
+                        } ${isAlreadyPaid ? 'bg-amber-50/30' : ''}`}
                       >
                         <div className="flex items-center gap-2.5">
                           <input
@@ -2072,6 +2134,11 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                           <div>
                             <span className="font-bold text-slate-900">{m.name}</span>
                             <span className="font-mono text-[11px] text-slate-500 ml-2">({m.id})</span>
+                            {isAlreadyPaid && (
+                              <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-200">
+                                Sudah tercatat periode ini
+                              </span>
+                            )}
                           </div>
                         </div>
 

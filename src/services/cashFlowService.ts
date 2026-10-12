@@ -1,6 +1,6 @@
 import { supabase } from '../lib/supabase';
 import { CashFlowRecord, AuthUser } from '../types';
-import { loadCashFlow as loadLocalFallbackCashFlow } from '../utils/storage';
+import { loadCashFlow as loadLocalFallbackCashFlow, sanitizeUuid } from '../utils/storage';
 import { formatRupiah } from '../utils/formatters';
 
 export interface CreateCashFlowInput {
@@ -248,9 +248,9 @@ export async function createCashFlowRecord(
     const accountLabel = targetAccount === 'kas_bank' ? 'Kas di Bank' : 'Kas Tunai Fisik';
     const typeLabel = input.type === 'masuk' ? 'Pemasukan' : 'Pengeluaran';
     try {
+      const validUserUuid = sanitizeUuid(currentUser.id);
       const auditPayload = {
-        id: `LOG-CSH-${Date.now()}`,
-        user_id: currentUser.id || undefined,
+        user_id: validUserUuid || undefined,
         actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
         actor_role: currentUser.role || 'pengurus',
         action: 'CREATE_CASH_FLOW',
@@ -335,9 +335,9 @@ export async function deleteCashFlowRecord(
     }
 
     try {
+      const validUserUuid = sanitizeUuid(currentUser.id);
       const auditPayload = {
-        id: `LOG-DEL-CSH-${Date.now()}`,
-        user_id: currentUser.id || undefined,
+        user_id: validUserUuid || undefined,
         actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
         actor_role: currentUser.role || 'pengurus',
         action: 'DELETE_CASH_FLOW',

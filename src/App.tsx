@@ -51,11 +51,17 @@ import {
 } from './utils/storage';
 import { supabase } from './lib/supabase';
 import { logoutUser, fetchUserProfile } from './utils/auth';
-import { fetchMembersFromSupabase } from './services/memberService';
+import {
+  fetchMembersFromSupabase,
+  updateMemberInSupabase,
+  createMemberInSupabase,
+} from './services/memberService';
 import {
   fetchSavingsFromSupabase,
   createSavingsTransaction,
   createBatchSavingsTransactions,
+  deleteSavingsTransaction,
+  completeBerjangkaTransaction,
 } from './services/savingsService';
 import {
   fetchLoansFromSupabase,
@@ -491,62 +497,63 @@ export default function App() {
     await reloadAuditLogs();
   };
 
-  // Member Handlers
-  const handleAddMember = (newMemberData: Omit<Member, 'id'>, initialPokok: number) => {
+  // Member Handlers: Terhubung langsung ke Supabase PostgreSQL sebagai Single Source of Truth
+  const handleAddMember = async (newMemberData: Omit<Member, 'id'>, initialPokok: number) => {
     const newId = getNextMemberId(members);
     const newMember: Member = {
       id: newId,
       ...newMemberData,
     };
 
-    const updatedMembers = [...members, newMember];
-    setMembers(updatedMembers);
+    const res = await createMemberInSupabase(newMember, currentUser);
+    if (!res.success) {
+      alert(`Gagal mendaftarkan anggota: ${res.message}`);
+      return;
+    }
 
-    // If initial simpanan pokok is provided, record it
+    // Jika ada setoran awal simpanan pokok, simpan resmi ke Supabase
     if (initialPokok > 0) {
       const now = new Date();
-      const dateStr = now.toISOString().slice(0, 16).replace('T', ' ');
-      const txId = `SMP-${now.getFullYear().toString().slice(-2)}${String(now.getMonth() + 1).padStart(2, '0')}-${String(
-        savings.length + 1
-      ).padStart(3, '0')}`;
-
-      const newSavingsTx: SavingsTransaction = {
-        id: txId,
-        memberId: newId,
-        memberName: newMember.name,
-        type: 'pokok',
-        txType: 'setor',
-        amount: initialPokok,
-        date: dateStr,
-        adminName: 'Admin Koperasi',
-        notes: 'Setoran Simpanan Pokok awal pendaftaran',
-      };
-      setSavings((prev) => [...prev, newSavingsTx]);
-
-      // Record in cash flow
-      const cfRecord: CashFlowRecord = {
-        id: `CSH-${Date.now().toString().slice(-5)}`,
-        date: dateStr.split(' ')[0],
-        type: 'masuk',
-        category: 'simpanan',
-        amount: initialPokok,
-        referenceId: txId,
-        description: `Setoran Simpanan Pokok - ${newMember.name} (${newId})`,
-      };
-      setCashFlow((prev) => [...prev, cfRecord]);
+      const dateStr = now.toISOString().slice(0, 10);
+      await createSavingsTransaction(
+        {
+          memberId: newId,
+          memberName: newMember.name,
+          type: 'pokok',
+          txType: 'setor',
+          amount: initialPokok,
+          date: dateStr,
+          notes: 'Setoran Simpanan Pokok awal pendaftaran anggota',
+          adminName: currentUser?.name || 'Pengurus BJS',
+        },
+        currentUser,
+        [...members, newMember]
+      );
+      await reloadSavings();
+      await reloadCashFlow();
     }
+
+    await reloadMembers();
+    await reloadDashboard();
+    await reloadReport();
+    await reloadAuditLogs();
   };
 
-  const handleEditMember = (updatedMember: Member) => {
-    setMembers((prev) => prev.map((m) => (m.id === updatedMember.id ? updatedMember : m)));
+  const handleEditMember = async (updatedMember: Member) => {
+    const res = await updateMemberInSupabase(updatedMember, currentUser);
+    if (!res.success) {
+      alert(`Gagal memperbarui data anggota: ${res.message}`);
+      return;
+    }
+    await reloadMembers();
+    await reloadDashboard();
+    await reloadReport();
+    await reloadAuditLogs();
   };
 
   const handleDeleteMember = (memberId: string) => {
-    setMembers((prev) => prev.filter((m) => m.id !== memberId));
-    // Also remove associated savings, loans, and repayments
-    setSavings((prev) => prev.filter((s) => s.memberId !== memberId));
-    setLoans((prev) => prev.filter((l) => l.memberId !== memberId));
-    setRepayments((prev) => prev.filter((r) => r.memberId !== memberId));
+    // Tidak mengizinkan hard delete anggota di produksi untuk menjaga integritas historis 217 anggota
+    alert('Penghapusan anggota dinonaktifkan demi integritas data historis. Silakan ubah status anggota menjadi "Keluar" jika anggota mengundurkan diri.');
   };
 
   // Savings Handlers: Terhubung langsung ke Supabase PostgreSQL
@@ -561,6 +568,9 @@ export default function App() {
 
     // Refresh data simpanan langsung dari Supabase sebagai single source of truth
     await reloadSavings();
+    await reloadCashFlow();
+    await reloadDashboard();
+    await reloadReport();
 
     return result;
   };
@@ -576,46 +586,38 @@ export default function App() {
 
     // Refresh data simpanan langsung dari Supabase sebagai single source of truth
     await reloadSavings();
+    await reloadCashFlow();
+    await reloadDashboard();
+    await reloadReport();
 
     return result;
   };
 
-  const handleCompleteBerjangka = (savingsId: string) => {
-    const target = savings.find((s) => s.id === savingsId);
-    if (!target) return;
+  const handleCompleteBerjangka = async (savingsId: string) => {
+    const res = await completeBerjangkaTransaction(savingsId, currentUser);
+    if (!res.success) {
+      alert(`Gagal mencairkan simpanan berjangka: ${res.message}`);
+      return;
+    }
 
-    setSavings((prev) =>
-      prev.map((s) => (s.id === savingsId ? { ...s, statusBerjangka: 'selesai' as const } : s))
-    );
-
-    const todayDate = new Date().toISOString().split('T')[0];
-    const interestAmount = target.accruedInterest || Math.round(target.amount * 0.06);
-
-    const cfPrincipal: CashFlowRecord = {
-      id: `CSH-${Date.now().toString().slice(-5)}-1`,
-      date: todayDate,
-      type: 'keluar',
-      category: 'tarik_simpanan',
-      amount: target.amount,
-      referenceId: target.id,
-      description: `Pencairan Pokok Simpanan Berjangka ${target.id} - ${target.memberName}`,
-    };
-
-    const cfInterest: CashFlowRecord = {
-      id: `CSH-${Date.now().toString().slice(-5)}-2`,
-      date: todayDate,
-      type: 'keluar',
-      category: 'operasional',
-      amount: interestAmount,
-      referenceId: target.id,
-      description: `Pembayaran Bunga Simpanan Berjangka 6% ${target.id} - ${target.memberName}`,
-    };
-
-    setCashFlow((prev) => [...prev, cfPrincipal, cfInterest]);
+    await reloadSavings();
+    await reloadCashFlow();
+    await reloadDashboard();
+    await reloadReport();
+    await reloadAuditLogs();
   };
 
-  const handleDeleteSavings = (savingsId: string) => {
-    setSavings((prev) => prev.filter((s) => s.id !== savingsId));
+  const handleDeleteSavings = async (savingsId: string) => {
+    const res = await deleteSavingsTransaction(savingsId, currentUser);
+    if (!res.success) {
+      alert(`Gagal menghapus transaksi simpanan: ${res.message}`);
+      return;
+    }
+
+    await reloadSavings();
+    await reloadDashboard();
+    await reloadReport();
+    await reloadAuditLogs();
   };
 
   // Loan Handlers: Terhubung langsung ke Supabase PostgreSQL sebagai Single Source of Truth

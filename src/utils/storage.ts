@@ -80,20 +80,10 @@ function getStoredOrDefault<T>(key: string, fallbackKey: string, defaultValue: T
 
 export function loadMembers(): Member[] {
   const list = getStoredOrDefault<Member[]>(KEYS.MEMBERS, 'bjs_members_v2', INITIAL_MEMBERS);
-  return list.map((m) => {
-    if (m.id === 'BJS-001' && (!m.notes || !m.notes.includes('Berjangka'))) {
-      return {
-        ...m,
-        initialTotalSavings: 6950000,
-        notes: 'Total Simpanan Pokok, Wajib & Berjangka: Rp 6.950.000 (Termasuk Berjangka Rp 5.000.000)',
-        job: m.job || 'Dinas Pemadam Kebakaran & Penyelamatan Kab. Cirebon',
-      };
-    }
-    return {
-      ...m,
-      job: m.job || 'Dinas',
-    };
-  });
+  return list.map((m) => ({
+    ...m,
+    job: m.job || 'Dinas',
+  }));
 }
 
 export function saveMembers(members: Member[]): void {
@@ -108,51 +98,17 @@ export function loadSavings(): SavingsTransaction[] {
   let list = getStoredOrDefault<SavingsTransaction[]>(KEYS.SAVINGS, 'bjs_savings_v2', INITIAL_SAVINGS);
   // Ensure no sukarela savings exist (Koperasi BJS only has Pokok, Wajib, and Berjangka per AD/ART)
   list = list.filter((s) => (s.type as string) !== 'sukarela' && !s.id?.toLowerCase().includes('sukarela'));
-
-  // Ensure BJS-001 berjangka transaction exists with all valid fields for seamless relational data sync
-  const bjs001Idx = list.findIndex(
-    (s) => s.id === 'SMP-BJS-001-BJK' || (s.memberId === 'BJS-001' && s.type === 'berjangka')
-  );
-  const bjs001Bjk: SavingsTransaction = {
-    id: 'SMP-BJS-001-BJK',
-    memberId: 'BJS-001',
-    memberName: 'MOH. FERY AFRUDIN, S.STP',
-    type: 'berjangka',
-    txType: 'setor',
-    amount: 5000000,
-    date: '2025-01-15 10:00',
-    adminName: 'Admin Bendahara BJS',
-    statusBerjangka: 'aktif',
-    termMonths: 12,
-    annualInterestRate: 6.0,
-    maturityDate: '2026-01-15',
-    accruedInterest: 300000,
-    interestPaymentSchedule: 'Dibayarkan saat RAT tahunan (ART Pasal 6 Ayat 6)',
-    notes: 'Simpanan Berjangka Penyertaan Modal Koperasi Tenor 1 Tahun (Bunga 6% p.a.)',
-  };
-
-  if (bjs001Idx === -1) {
-    list = [bjs001Bjk, ...list];
-  } else {
-    // Ensure all critical relational fields are present and valid
-    list[bjs001Idx] = {
-      ...bjs001Bjk,
-      ...list[bjs001Idx],
-      id: 'SMP-BJS-001-BJK',
-      memberId: 'BJS-001',
-      memberName: 'MOH. FERY AFRUDIN, S.STP',
-      type: 'berjangka',
-      txType: 'setor',
-      statusBerjangka: list[bjs001Idx].statusBerjangka === 'selesai' ? 'selesai' : 'aktif',
-      amount: list[bjs001Idx].amount || 5000000,
-    };
-  }
-  try {
-    localStorage.setItem(KEYS.SAVINGS, JSON.stringify(list));
-  } catch (e) {
-    console.error('Failed to sync savings for BJS-001', e);
-  }
   return list;
+}
+
+export function deleteLocalSavings(id: string): void {
+  try {
+    const list = loadSavings();
+    const updated = list.filter((s) => s.id !== id);
+    localStorage.setItem(KEYS.SAVINGS, JSON.stringify(updated));
+  } catch (e) {
+    console.error('Failed to remove savings from local storage', e);
+  }
 }
 
 export function saveSavings(savings: SavingsTransaction[]): void {
@@ -437,30 +393,74 @@ export function calculateMemberSavings(memberId: string, savingsList: SavingsTra
   };
 }
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Validasi dan sanitasi UUID untuk kolom bertipe UUID pada Supabase PostgreSQL.
+ * Mencegah error 'invalid input syntax for type uuid: "pengurus"'.
+ */
+export function sanitizeUuid(val?: string | null): string | null {
+  if (!val || typeof val !== 'string') return null;
+  const clean = val.trim();
+  return UUID_REGEX.test(clean) ? clean : null;
+}
+
 export function calculateLoanRemaining(loan: Loan): {
+  pokokAwal: number;
+  totalBunga: number;
+  totalKewajiban: number;
   paidPrincipal: number;
+  paidInterest: number;
+  paidTotal: number;
   remainingPrincipal: number;
+  remainingInterest: number;
   remainingTotal: number;
   paidCount: number;
 } {
+  const pokokAwal = Number(loan.amount) || 0;
+  let totalBunga = 0;
   let paidPrincipal = 0;
+  let paidInterest = 0;
   let remainingPrincipal = 0;
+  let remainingInterest = 0;
   let remainingTotal = 0;
   let paidCount = 0;
 
-  for (const item of loan.schedules) {
+  const schedules = loan.schedules || [];
+  for (const item of schedules) {
+    totalBunga += Number(item.interest) || 0;
     if (item.isPaid) {
-      paidPrincipal += item.principal;
+      paidPrincipal += Number(item.principal) || 0;
+      paidInterest += Number(item.interest) || 0;
       paidCount++;
     } else {
-      remainingPrincipal += item.principal;
-      remainingTotal += item.totalInstallment;
+      remainingPrincipal += Number(item.principal) || 0;
+      remainingInterest += Number(item.interest) || 0;
+      remainingTotal += Number(item.totalInstallment) || 0;
     }
   }
 
+  // Jika schedules kosong (misal data belum dimuat), gunakan formula tenor & suku bunga resmi
+  if (schedules.length === 0) {
+    const monthlyInterest = Math.round(pokokAwal * ((loan.interestRatePerMonth || 1.5) / 100));
+    totalBunga = monthlyInterest * (loan.tenorMonths || 10);
+    remainingPrincipal = pokokAwal;
+    remainingInterest = totalBunga;
+    remainingTotal = remainingPrincipal + remainingInterest;
+  }
+
+  const totalKewajiban = pokokAwal + totalBunga;
+  const paidTotal = paidPrincipal + paidInterest;
+
   return {
+    pokokAwal,
+    totalBunga,
+    totalKewajiban,
     paidPrincipal,
+    paidInterest,
+    paidTotal,
     remainingPrincipal,
+    remainingInterest,
     remainingTotal,
     paidCount,
   };

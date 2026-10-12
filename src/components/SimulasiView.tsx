@@ -1239,7 +1239,7 @@ export const SimulasiView: React.FC<SimulasiViewProps> = ({
                 <tfoot className="bg-slate-100/90 font-bold border-t-2 border-slate-300 sticky bottom-0 z-10">
                   <tr>
                     <td colSpan={4} className="py-3 px-3 uppercase text-slate-900">
-                      TOTAL ESTIMASI SIMULASI HAK SELURUH ANGGOTA ({members.length})
+                      TOTAL ESTIMASI SIMULASI HAK SELURUH ANGGOTA ({members.filter((m) => m.status !== 'keluar').length})
                     </td>
                     <td className="py-3 px-3 text-right font-mono text-slate-900">
                       {formatRupiah(simulatedMemberDetails.reduce((a, b) => a + b.jasaUsaha, 0))}

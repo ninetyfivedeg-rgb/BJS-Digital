@@ -1,6 +1,6 @@
 import { supabase } from '../lib/supabase';
 import { Member, SavingsTransaction, SavingsType, SavingsTransactionType, AuthUser } from '../types';
-import { loadSavings as loadLocalFallbackSavings } from '../utils/storage';
+import { loadSavings as loadLocalFallbackSavings, deleteLocalSavings, saveSavings, sanitizeUuid } from '../utils/storage';
 import { formatRupiah } from '../utils/formatters';
 
 /**
@@ -122,13 +122,27 @@ export async function fetchSavingsFromSupabase(members?: Member[]): Promise<Fetc
 
     if (data && Array.isArray(data) && data.length > 0) {
       const mapped = data.map((row) => mapSupabaseSavingsToSavings(row, members));
-      // Gabungkan transaksi Supabase dengan historical data fallback jika transaksi Supabase belum memuat historical
-      // Hindari duplikasi ID jika historical sudah ada di Supabase
+      
+      // Jika Supabase sudah memuat data penuh (>= 200 baris), Supabase adalah Single Source of Truth mutlak
+      if (mapped.length >= 200) {
+        saveSavings(mapped);
+        return {
+          savings: mapped,
+          error: null,
+          fromSupabase: true,
+          totalCount: mapped.length,
+        };
+      }
+
+      // Jika Supabase baru berisi data parsial, gabungkan hanya baris historis simpanan pokok/wajib lama
+      // JANGAN pernah memasukkan kembali simpanan berjangka atau transaksi yang telah dihapus
       const existingIds = new Set(mapped.map((s) => s.id));
-      const combined = [
-        ...mapped,
-        ...fallbackList.filter((s) => !existingIds.has(s.id)),
-      ];
+      const supplementalHistorical = fallbackList.filter(
+        (s) => !existingIds.has(s.id) && s.type !== 'berjangka' && !s.id.startsWith('SMP-BJK-')
+      );
+
+      const combined = [...mapped, ...supplementalHistorical];
+      saveSavings(combined);
       return {
         savings: combined,
         error: null,
@@ -327,9 +341,9 @@ export async function createSavingsTransaction(
 
     // 11. Catat ke audit_logs
     try {
+      const validUserUuid = sanitizeUuid(currentUser.id);
       const auditPayload = {
-        id: `LOG-SMP-${Date.now()}`,
-        user_id: currentUser.id || undefined,
+        user_id: validUserUuid || undefined,
         actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
         actor_role: currentUser.role || 'pengurus',
         action: 'CREATE_SAVINGS_TRANSACTION',
@@ -383,6 +397,41 @@ export async function createBatchSavingsTransactions(
       message: 'Daftar transaksi kolektif kosong.',
       error: 'EMPTY_BATCH',
     };
+  }
+
+  // 2b. Database-level Duplicate Prevention:
+  // Cek apakah ada anggota dalam batch yang sudah memiliki simpanan wajib untuk periode ini
+  const memberIdsInBatch = inputs.map((i) => i.memberId?.trim()).filter(Boolean);
+  const periodKeywords = inputs
+    .map((i) => {
+      const match = (i.notes || '').match(/Periode\s+([A-Za-z]+\s+\d{4})/i);
+      return match ? match[1].trim() : null;
+    })
+    .filter(Boolean);
+
+  if (periodKeywords.length > 0 && memberIdsInBatch.length > 0) {
+    const periodStr = periodKeywords[0];
+    try {
+      const { data: existingSamePeriod } = await supabase
+        .from('savings_transactions')
+        .select('member_id, member_name, notes')
+        .eq('type', 'wajib')
+        .in('member_id', memberIdsInBatch)
+        .ilike('notes', `%${periodStr}%`);
+
+      if (existingSamePeriod && existingSamePeriod.length > 0) {
+        const alreadyList = existingSamePeriod
+          .map((e) => `${e.member_name || e.member_id} (${e.member_id})`)
+          .join(', ');
+        return {
+          success: false,
+          message: `Ditolak oleh sistem database: Simpanan Wajib periode "${periodStr}" sudah pernah dicatat sebelumnya untuk: ${alreadyList}. Pencegahan duplikasi aktif.`,
+          error: 'DUPLICATE_PERIOD_TRANSACTION',
+        };
+      }
+    } catch (checkErr) {
+      console.warn('Gagal memverifikasi duplikasi periode pada database:', checkErr);
+    }
   }
 
   // 2. Validasi seluruh item sebelum melakukan insert
@@ -473,9 +522,9 @@ export async function createBatchSavingsTransactions(
 
     // 4. Catat audit log batch
     try {
+      const validUserUuid = sanitizeUuid(currentUser.id);
       const auditPayload = {
-        id: `LOG-SMP-BATCH-${Date.now()}`,
-        user_id: currentUser.id || undefined,
+        user_id: validUserUuid || undefined,
         actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
         actor_role: currentUser.role || 'pengurus',
         action: 'CREATE_SAVINGS_TRANSACTION',
@@ -500,6 +549,180 @@ export async function createBatchSavingsTransactions(
     return {
       success: false,
       message: `Terjadi kendala jaringan saat menyimpan transaksi kolektif: ${err.message || 'Koneksi gagal'}`,
+      error: err.message,
+    };
+  }
+}
+
+/**
+ * Menghapus transaksi simpanan dari database Supabase secara persistent.
+ */
+export async function deleteSavingsTransaction(
+  id: string,
+  currentUser?: AuthUser | null
+): Promise<{ success: boolean; message: string; error?: string }> {
+  if (!currentUser || currentUser.role !== 'pengurus') {
+    return {
+      success: false,
+      message: 'Akses ditolak: Hanya Pengurus yang dapat menghapus transaksi simpanan.',
+      error: 'UNAUTHORIZED_ROLE',
+    };
+  }
+
+  try {
+    const { data: existing, error: fetchErr } = await supabase
+      .from('savings_transactions')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (fetchErr) {
+      console.warn('Gagal membaca data simpanan sebelum hapus:', fetchErr.message);
+    }
+
+    const { error: delErr } = await supabase
+      .from('savings_transactions')
+      .delete()
+      .eq('id', id);
+
+    if (delErr) {
+      return {
+        success: false,
+        message: `Gagal menghapus transaksi simpanan dari server database: ${delErr.message}`,
+        error: delErr.message,
+      };
+    }
+
+    // Bersihkan juga cache lokal agar tidak terjadi resureksi antar-perangkat
+    deleteLocalSavings(id);
+
+    // Catat ke audit_logs
+    try {
+      const validUserUuid = sanitizeUuid(currentUser.id);
+      const auditPayload = {
+        user_id: validUserUuid || undefined,
+        actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
+        actor_role: currentUser.role || 'pengurus',
+        action: 'DELETE_SAVINGS_TRANSACTION',
+        entity_type: 'savings_transactions',
+        entity_id: id,
+        description: `Menghapus transaksi simpanan ID: ${id} (${existing ? `${existing.type} - ${formatRupiah(existing.amount)}` : ''})`,
+        old_data: existing || null,
+        created_at: new Date().toISOString(),
+      };
+      await supabase.from('audit_logs').insert([auditPayload]);
+    } catch {}
+
+    return {
+      success: true,
+      message: `Transaksi simpanan ${id} berhasil dihapus dari server database.`,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      message: `Terjadi kendala jaringan: ${err.message || 'Koneksi gagal'}`,
+      error: err.message,
+    };
+  }
+}
+
+/**
+ * Menyelesaikan dan mencairkan bilyet Simpanan Berjangka langsung ke Supabase PostgreSQL.
+ * Mengubah status_berjangka menjadi 'selesai' dan mencatat mutasi kas keluar resmi.
+ */
+export async function completeBerjangkaTransaction(
+  id: string,
+  currentUser?: AuthUser | null
+): Promise<{ success: boolean; message: string; error?: string }> {
+  if (!currentUser || currentUser.role !== 'pengurus') {
+    return {
+      success: false,
+      message: 'Akses ditolak: Hanya Pengurus yang dapat mencairkan simpanan berjangka.',
+      error: 'UNAUTHORIZED_ROLE',
+    };
+  }
+
+  try {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const { data: updatedTx, error: updErr } = await supabase
+      .from('savings_transactions')
+      .update({
+        status_berjangka: 'selesai',
+        completed_date: todayStr,
+      })
+      .eq('id', id)
+      .select('*')
+      .single();
+
+    if (updErr) {
+      return {
+        success: false,
+        message: `Gagal mencairkan simpanan berjangka: ${updErr.message}`,
+        error: updErr.message,
+      };
+    }
+
+    // Catat mutasi kas keluar pokok dan bunga di cash_flow_records
+    const amount = Number(updatedTx.amount) || 0;
+    const interest = Number(updatedTx.accrued_interest) || Math.round(amount * 0.06);
+    const memberName = updatedTx.member_name || 'Anggota BJS';
+
+    const cfPrincipal = {
+      id: `CSH-CAIR-PKK-${id.replace(/[^A-Za-z0-9]/g, '')}`,
+      transaction_date: todayStr,
+      type: 'keluar',
+      category: 'tarik_simpanan',
+      amount: amount,
+      reference_id: id,
+      description: `Pencairan Pokok Simpanan Berjangka ${id} - ${memberName}`,
+      target_account: 'kas_koperasi',
+      created_at: new Date().toISOString(),
+    };
+
+    const cfInterest = {
+      id: `CSH-CAIR-BNG-${id.replace(/[^A-Za-z0-9]/g, '')}`,
+      transaction_date: todayStr,
+      type: 'keluar',
+      category: 'operasional',
+      amount: interest,
+      reference_id: id,
+      description: `Pembayaran Bunga Simpanan Berjangka 6% ${id} - ${memberName}`,
+      target_account: 'kas_koperasi',
+      created_at: new Date().toISOString(),
+    };
+
+    const { error: cfErr } = await supabase
+      .from('cash_flow_records')
+      .insert([cfPrincipal, cfInterest]);
+
+    if (cfErr) {
+      console.warn('Peringatan: Gagal mencatat kas pencairan simpanan berjangka:', cfErr.message);
+    }
+
+    try {
+      const validUserUuid = sanitizeUuid(currentUser.id);
+      const auditPayload = {
+        user_id: validUserUuid || undefined,
+        actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
+        actor_role: currentUser.role || 'pengurus',
+        action: 'COMPLETE_BERJANGKA',
+        entity_type: 'savings_transactions',
+        entity_id: id,
+        description: `Pencairan dan penyelesaian Simpanan Berjangka ${id} sebesar ${formatRupiah(amount)} bunga ${formatRupiah(interest)} untuk ${memberName}`,
+        new_data: updatedTx,
+        created_at: new Date().toISOString(),
+      };
+      await supabase.from('audit_logs').insert([auditPayload]);
+    } catch {}
+
+    return {
+      success: true,
+      message: `Simpanan Berjangka ${id} berhasil diselesaikan dan dicairkan resmi di database.`,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      message: `Terjadi kendala jaringan: ${err.message || 'Koneksi gagal'}`,
       error: err.message,
     };
   }
