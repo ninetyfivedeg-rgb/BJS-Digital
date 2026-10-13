@@ -64,8 +64,10 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({
       const matchActor = log.actorName?.toLowerCase().includes(q) || log.userId?.toLowerCase().includes(q);
       const matchAction = log.action?.toLowerCase().includes(q);
       const matchModule = log.entityType?.toLowerCase().includes(q);
-      const matchId = log.entityId?.toLowerCase().includes(q) || log.id?.toLowerCase().includes(q);
-      return matchDesc || matchActor || matchAction || matchModule || matchId;
+      const matchId =
+        (log.entityId ? String(log.entityId).toLowerCase().includes(q) : false) ||
+        (log.id ? String(log.id).toLowerCase().includes(q) : false);
+      return Boolean(matchDesc || matchActor || matchAction || matchModule || matchId);
     }
     return true;
   });
@@ -297,7 +299,9 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({
                   <tr key={log.id} className="hover:bg-slate-50/80 transition">
                     <td className="px-4 py-3 whitespace-nowrap text-slate-700">
                       <div className="font-semibold text-slate-900">{formatDateTimeIndo(log.createdAt)}</div>
-                      <div className="font-mono text-[10px] text-slate-400 mt-0.5">ID: {log.id.slice(0, 8)}...</div>
+                      <div className="font-mono text-[10px] text-slate-400 mt-0.5">
+                        ID: {String(log.id ?? '').length > 8 ? `${String(log.id).slice(0, 8)}...` : String(log.id)}
+                      </div>
                     </td>
 
                     <td className="px-4 py-3 whitespace-nowrap">

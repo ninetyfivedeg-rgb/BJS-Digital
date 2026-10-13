@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Users,
   UserPlus,
@@ -17,6 +17,9 @@ import {
   AlertTriangle,
   Building2,
   CreditCard,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
 import { Member, SavingsTransaction, Loan, MemberStatus, UserRole, UNIT_KERJA_OPTIONS, AuthUser } from '../types';
 import { formatRupiah, formatDateIndo } from '../utils/formatters';
@@ -102,6 +105,71 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
 
     return matchesSearch && matchesStatus && matchesUnitKerja && matchesYear;
   });
+
+  type SortField = 'id' | 'name' | 'job' | 'joinYear' | 'totalSavings' | 'remainingDebt' | 'status';
+  type SortOrder = 'asc' | 'desc';
+
+  const [sortField, setSortField] = useState<SortField>('id');
+  const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
+
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      setSortOrder(field === 'totalSavings' || field === 'remainingDebt' ? 'desc' : 'asc');
+    }
+  };
+
+  const sortedMembers = useMemo(() => {
+    return [...filteredMembers].sort((a, b) => {
+      let valA: any;
+      let valB: any;
+
+      switch (sortField) {
+        case 'id':
+          valA = parseInt(a.id.replace(/\D/g, ''), 10) || a.id;
+          valB = parseInt(b.id.replace(/\D/g, ''), 10) || b.id;
+          break;
+        case 'name':
+          valA = (a.name || '').toLowerCase();
+          valB = (b.name || '').toLowerCase();
+          break;
+        case 'job':
+          valA = (a.job || '').toLowerCase();
+          valB = (b.job || '').toLowerCase();
+          break;
+        case 'joinYear':
+          valA = a.joinYear ?? (a.status === 'pasif' ? 9999 : 2023);
+          valB = b.joinYear ?? (b.status === 'pasif' ? 9999 : 2023);
+          break;
+        case 'totalSavings': {
+          valA = calculateMemberSavings(a.id, savings).total;
+          valB = calculateMemberSavings(b.id, savings).total;
+          break;
+        }
+        case 'remainingDebt': {
+          valA = loans
+            .filter((l) => l.memberId === a.id && l.status === 'aktif')
+            .reduce((acc, curr) => acc + calculateLoanRemaining(curr).remainingPrincipal, 0);
+          valB = loans
+            .filter((l) => l.memberId === b.id && l.status === 'aktif')
+            .reduce((acc, curr) => acc + calculateLoanRemaining(curr).remainingPrincipal, 0);
+          break;
+        }
+        case 'status':
+          valA = a.status || '';
+          valB = b.status || '';
+          break;
+        default:
+          return 0;
+      }
+
+      if (valA < valB) return sortOrder === 'asc' ? -1 : 1;
+      if (valA > valB) return sortOrder === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }, [filteredMembers, sortField, sortOrder, savings, loans]);
 
   const handleSubmitAdd = (e: React.FormEvent) => {
     e.preventDefault();
@@ -550,9 +618,6 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
             <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight">
               Direktori 217 Anggota Koperasi
             </h2>
-            <p className="text-xs sm:text-sm text-blue-100/90 max-w-2xl mt-1 leading-relaxed">
-              Dihitung berdasarkan simpanan pokok Rp 200.000 & simpanan wajib Rp 50.000/bulan sampai dengan posisi Desember 2025. Dilengkapi sistem auto-generate nomor register pendaftaran anggota baru.
-            </p>
           </div>
 
           {userRole === 'pengurus' ? (
@@ -687,25 +752,116 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
           <table className="w-full text-left text-sm">
             <thead className="bg-gradient-to-r from-slate-50 via-blue-50/40 to-red-50/20 border-b border-slate-200 text-[11px] font-extrabold uppercase tracking-wider text-slate-600">
               <tr>
-                <th className="px-4 py-3.5">No. Register</th>
-                <th className="px-4 py-3.5">Nama Anggota</th>
-                <th className="px-4 py-3.5">Unit Kerja</th>
-                <th className="px-4 py-3.5 text-center">Tahun Bergabung</th>
-                <th className="px-4 py-3.5 text-right">Total Simpanan (s/d Des 2025)</th>
-                <th className="px-4 py-3.5 text-right">Sisa Pinjaman</th>
-                <th className="px-4 py-3.5 text-center">Status</th>
+                <th
+                  onClick={() => handleSort('id')}
+                  className="px-4 py-3.5 cursor-pointer hover:bg-slate-100/70 transition select-none group"
+                  title="Klik untuk mengurutkan No. Register"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span>No. Register</span>
+                    {sortField === 'id' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-blue-900" /> : <ArrowDown className="w-3.5 h-3.5 text-blue-900" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 text-slate-400 group-hover:text-slate-600 opacity-60" />
+                    )}
+                  </div>
+                </th>
+                <th
+                  onClick={() => handleSort('name')}
+                  className="px-4 py-3.5 cursor-pointer hover:bg-slate-100/70 transition select-none group"
+                  title="Klik untuk mengurutkan Nama Anggota"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span>Nama Anggota</span>
+                    {sortField === 'name' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-blue-900" /> : <ArrowDown className="w-3.5 h-3.5 text-blue-900" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 text-slate-400 group-hover:text-slate-600 opacity-60" />
+                    )}
+                  </div>
+                </th>
+                <th
+                  onClick={() => handleSort('job')}
+                  className="px-4 py-3.5 cursor-pointer hover:bg-slate-100/70 transition select-none group"
+                  title="Klik untuk mengurutkan Unit Kerja"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span>Unit Kerja</span>
+                    {sortField === 'job' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-blue-900" /> : <ArrowDown className="w-3.5 h-3.5 text-blue-900" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 text-slate-400 group-hover:text-slate-600 opacity-60" />
+                    )}
+                  </div>
+                </th>
+                <th
+                  onClick={() => handleSort('joinYear')}
+                  className="px-4 py-3.5 text-center cursor-pointer hover:bg-slate-100/70 transition select-none group"
+                  title="Klik untuk mengurutkan Tahun Bergabung"
+                >
+                  <div className="flex items-center justify-center gap-1.5">
+                    <span>Tahun Bergabung</span>
+                    {sortField === 'joinYear' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-blue-900" /> : <ArrowDown className="w-3.5 h-3.5 text-blue-900" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 text-slate-400 group-hover:text-slate-600 opacity-60" />
+                    )}
+                  </div>
+                </th>
+                <th
+                  onClick={() => handleSort('totalSavings')}
+                  className="px-4 py-3.5 text-right cursor-pointer hover:bg-slate-100/70 transition select-none group"
+                  title="Klik untuk mengurutkan Total Simpanan"
+                >
+                  <div className="flex items-center justify-end gap-1.5">
+                    <span>TOTAL SIMPANAN</span>
+                    {sortField === 'totalSavings' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-blue-900" /> : <ArrowDown className="w-3.5 h-3.5 text-blue-900" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 text-slate-400 group-hover:text-slate-600 opacity-60" />
+                    )}
+                  </div>
+                </th>
+                <th
+                  onClick={() => handleSort('remainingDebt')}
+                  className="px-4 py-3.5 text-right cursor-pointer hover:bg-slate-100/70 transition select-none group"
+                  title="Klik untuk mengurutkan Sisa Pinjaman"
+                >
+                  <div className="flex items-center justify-end gap-1.5">
+                    <span>Sisa Pinjaman</span>
+                    {sortField === 'remainingDebt' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-blue-900" /> : <ArrowDown className="w-3.5 h-3.5 text-blue-900" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 text-slate-400 group-hover:text-slate-600 opacity-60" />
+                    )}
+                  </div>
+                </th>
+                <th
+                  onClick={() => handleSort('status')}
+                  className="px-4 py-3.5 text-center cursor-pointer hover:bg-slate-100/70 transition select-none group"
+                  title="Klik untuk mengurutkan Status"
+                >
+                  <div className="flex items-center justify-center gap-1.5">
+                    <span>Status</span>
+                    {sortField === 'status' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-blue-900" /> : <ArrowDown className="w-3.5 h-3.5 text-blue-900" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 text-slate-400 group-hover:text-slate-600 opacity-60" />
+                    )}
+                  </div>
+                </th>
                 <th className="px-4 py-3.5 text-right">Aksi</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filteredMembers.length === 0 ? (
+              {sortedMembers.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="text-center py-12 text-slate-400 text-xs">
                     Tidak ditemukan data anggota yang cocok dengan kata kunci atau filter yang dipilih.
                   </td>
                 </tr>
               ) : (
-                filteredMembers.map((member) => {
+                sortedMembers.map((member) => {
                   const sav = calculateMemberSavings(member.id, savings);
                   const activeLoanList = loans.filter((l) => l.memberId === member.id && l.status === 'aktif');
                   const remainingDebt = activeLoanList.reduce(

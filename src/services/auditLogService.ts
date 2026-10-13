@@ -21,7 +21,7 @@ import { loadAuditLogs as loadLocalFallbackAuditLogs } from '../utils/storage';
  */
 export function mapSupabaseAuditLogToAuditLog(row: any): AuditLog {
   return {
-    id: row.id,
+    id: String(row.id ?? ''),
     userId: row.user_id || undefined,
     actorName: row.actor_name || undefined,
     actorRole: row.actor_role || undefined,
