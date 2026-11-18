@@ -40,7 +40,12 @@ import { formatRupiah, formatDateIndo } from '../utils/formatters';
 import { calculateBusinessUnitReports, calculateMemberSavings, calculateLoanRemaining } from '../utils/storage';
 import { NavTab } from './Sidebar';
 import { AuthUser } from '../types';
-import { isAnggotaUser, isSuperAdmin } from '../utils/permissions';
+import {
+  hasPersonalMemberPortal,
+  isAdminSp,
+  isBusinessUnitManager,
+  isSuperAdmin,
+} from '../utils/permissions';
 
 interface DashboardViewProps {
   summary: CooperativeSummary;
@@ -95,8 +100,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     name: '',
     role: userRole,
   };
-  const isAnggota = isAnggotaUser(effectiveUser);
+  const isAnggota = hasPersonalMemberPortal(effectiveUser);
   const isFullAdmin = isSuperAdmin(effectiveUser);
+  const isSpMgr = isAdminSp(effectiveUser);
+  const isUnitMgr = isBusinessUnitManager(effectiveUser);
   const myMemberId = (currentUser?.memberId || (isAnggota ? currentUser?.username : undefined) || 'BJS-001').trim();
   const myMember: Member = members.find((m) => m.id.toLowerCase() === myMemberId.toLowerCase()) || {
     id: myMemberId,
@@ -249,6 +256,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-red-600 text-white shadow-xs">
                 PORTAL ANGGOTA KOPERASI
               </span>
+              {isSpMgr && (
+                <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-500 text-white shadow-xs">
+                  ADMIN UNIT SIMPAN PINJAM
+                </span>
+              )}
+              {isUnitMgr && (
+                <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-amber-500 text-slate-950 shadow-xs">
+                  PENGELOLA UNIT USAHA
+                </span>
+              )}
               <span className="text-xs text-blue-200 font-semibold">BJS Digital</span>
               {isFromSupabase ? (
                 <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-200 border border-emerald-400/40">
@@ -276,19 +293,46 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
           <div className="relative z-10 flex flex-wrap gap-2 shrink-0">
             <button
-              onClick={() => onNavigate('simpanan')}
+              onClick={() => onNavigate('anggota')}
               className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white text-blue-950 font-bold text-xs shadow-md hover:bg-blue-50 transition cursor-pointer"
             >
-              <PiggyBank className="w-4 h-4 text-blue-900" />
-              <span>Lihat Simpanan Saya</span>
+              <Users className="w-4 h-4 text-blue-900" />
+              <span>Profil & KTA Saya</span>
             </button>
-            <button
-              onClick={() => onNavigate('pinjaman')}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-blue-800 hover:bg-blue-700 text-white font-bold text-xs shadow-md transition cursor-pointer border border-blue-600/40"
-            >
-              <HandCoins className="w-4 h-4 text-blue-200" />
-              <span>Lihat Pinjaman Saya</span>
-            </button>
+            {isSpMgr ? (
+              <button
+                onClick={() => onNavigate('pinjaman')}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md transition cursor-pointer border border-emerald-400/40"
+              >
+                <HandCoins className="w-4 h-4 text-emerald-100" />
+                <span>Kelola Unit Simpan Pinjam</span>
+              </button>
+            ) : isUnitMgr ? (
+              <button
+                onClick={() => onNavigate('unit_usaha')}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow-md transition cursor-pointer"
+              >
+                <Store className="w-4 h-4" />
+                <span>Kelola Unit Usaha Saya</span>
+              </button>
+            ) : (
+              <>
+                <button
+                  onClick={() => onNavigate('simpanan')}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-blue-800 hover:bg-blue-700 text-white font-bold text-xs shadow-md transition cursor-pointer border border-blue-600/40"
+                >
+                  <PiggyBank className="w-4 h-4 text-blue-200" />
+                  <span>Lihat Simpanan Saya</span>
+                </button>
+                <button
+                  onClick={() => onNavigate('pinjaman')}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-blue-800 hover:bg-blue-700 text-white font-bold text-xs shadow-md transition cursor-pointer border border-blue-600/40"
+                >
+                  <HandCoins className="w-4 h-4 text-blue-200" />
+                  <span>Lihat Pinjaman Saya</span>
+                </button>
+              </>
+            )}
           </div>
         </div>
 

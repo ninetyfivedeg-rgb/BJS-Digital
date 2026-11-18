@@ -24,6 +24,7 @@ import {
   Filter,
   Building2,
   SlidersHorizontal,
+  FileSpreadsheet,
 } from 'lucide-react';
 import {
   Member,
@@ -36,10 +37,13 @@ import {
   KOPERASI_OFFICIALS,
   SimpanPinjamCashMutation,
   SimpanPinjamCashMutationType,
+  SavingsTransaction,
+  CashFlowRecord,
 } from '../types';
 import { formatRupiah, formatDateIndo, formatDateTimeIndo } from '../utils/formatters';
 import { calculateLoanRemaining } from '../utils/storage';
 import { ReceiptData } from './ReceiptModal';
+import { LaporanUspView } from './LaporanUspView';
 import { printHtmlContent } from '../utils/printHelper';
 import {
   calculateTopUpPreview,
@@ -47,9 +51,10 @@ import {
   CreateTopUpLoanInput,
 } from '../services/loanService';
 import {
-  isAnggotaUser,
+  isAdminSp,
   isSimpanPinjamOfficer,
   isSuperAdmin,
+  usesPersonalMemberScope,
 } from '../utils/permissions';
 
 interface PinjamanViewProps {
@@ -86,8 +91,12 @@ interface PinjamanViewProps {
   onDeleteSpCashMutation?: (id: string) => Promise<void> | void;
   onMigrateLocalSpCash?: () => Promise<void>;
   hasLocalUnsyncedSpCash?: boolean;
-  activeSubTab?: 'daftar_pinjaman' | 'kas_unit_sp';
-  setActiveSubTab?: (tab: 'daftar_pinjaman' | 'kas_unit_sp') => void;
+  activeSubTab?: 'daftar_pinjaman' | 'kas_unit_sp' | 'laporan_usp';
+  setActiveSubTab?: (tab: 'daftar_pinjaman' | 'kas_unit_sp' | 'laporan_usp') => void;
+  savings?: SavingsTransaction[];
+  cashFlow?: CashFlowRecord[];
+  spManagerName?: string;
+  onRefreshUspReport?: () => void;
   isLoading?: boolean;
   error?: string | null;
   isFromSupabase?: boolean;
@@ -119,34 +128,44 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
   hasLocalUnsyncedSpCash = false,
   activeSubTab: controlledSubTab,
   setActiveSubTab: setControlledSubTab,
+  savings = [],
+  cashFlow = [],
+  spManagerName,
+  onRefreshUspReport,
   isLoading = false,
   error = null,
   isFromSupabase = false,
   onRefresh,
 }) => {
+  const effectiveSpManagerName = spManagerName || KOPERASI_OFFICIALS.manajerUSP;
   const effectiveUser: AuthUser | null = currentUser || {
     id: '',
     username: '',
     name: '',
     role: userRole,
   };
-  const isAnggota = isAnggotaUser(effectiveUser);
+  const isAnggota = usesPersonalMemberScope(effectiveUser);
   const isSpOfficer = isSimpanPinjamOfficer(effectiveUser);
+  const isAdminSpWithMember = isAdminSp(effectiveUser) && Boolean(currentUser?.memberId);
   const canDeleteLoans = isSuperAdmin(effectiveUser);
+  const [onlyMyLoans, setOnlyMyLoans] = useState(false);
 
   const activeMemberId = (currentUser?.memberId || (isAnggota ? currentUser?.username : undefined))?.trim().toLowerCase();
-  const effectiveLoans = isAnggota && activeMemberId
+  const scopeToPersonalLoans = (isAnggota || (isAdminSpWithMember && onlyMyLoans)) && Boolean(activeMemberId);
+  const effectiveLoans = scopeToPersonalLoans
     ? loans.filter((l) => l.memberId?.trim().toLowerCase() === activeMemberId)
     : loans;
 
-  const effectiveRepayments = isAnggota && activeMemberId
+  const effectiveRepayments = scopeToPersonalLoans
     ? repayments.filter((r) => r.memberId?.trim().toLowerCase() === activeMemberId)
     : repayments;
 
-  // Sub-menu state for Pinjaman module (controlled with internal fallback)
-  const [internalSubTab, setInternalSubTab] = useState<'daftar_pinjaman' | 'kas_unit_sp'>('daftar_pinjaman');
-  const activeSubTab = controlledSubTab ?? internalSubTab;
-  const setActiveSubTab = (tab: 'daftar_pinjaman' | 'kas_unit_sp') => {
+  // Sub-menu state for Unit Simpan Pinjam module (controlled with internal fallback)
+  const [internalSubTab, setInternalSubTab] = useState<'daftar_pinjaman' | 'kas_unit_sp' | 'laporan_usp'>('daftar_pinjaman');
+  const activeSubTab = !isSpOfficer && controlledSubTab && controlledSubTab !== 'daftar_pinjaman'
+    ? 'daftar_pinjaman'
+    : (controlledSubTab ?? internalSubTab);
+  const setActiveSubTab = (tab: 'daftar_pinjaman' | 'kas_unit_sp' | 'laporan_usp') => {
     setInternalSubTab(tab);
     if (setControlledSubTab) {
       setControlledSubTab(tab);
@@ -335,7 +354,7 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
           <div style="width: 30%;">
             <p>Manajer Unit Simpan Pinjam,</p>
             <div style="height: 50px;"></div>
-            <p style="font-weight: bold; border-top: 1px solid #cbd5e1; padding-top: 4px;">${KOPERASI_OFFICIALS.manajerUSP}</p>
+            <p style="font-weight: bold; border-top: 1px solid #cbd5e1; padding-top: 4px;">${effectiveSpManagerName}</p>
           </div>
           <div style="width: 30%;">
             <p>Bendahara Koperasi,</p>
@@ -761,7 +780,7 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
           <div>
             <p style="margin: 0; font-weight: bold;">Manajer Unit Simpan Pinjam,</p>
             <div style="height: 50px;"></div>
-            <span style="font-weight: bold; text-decoration: underline;">${KOPERASI_OFFICIALS.manajerUSP}</span>
+            <span style="font-weight: bold; text-decoration: underline;">${effectiveSpManagerName}</span>
           </div>
           <div>
             <p style="margin: 0; font-weight: bold;">Bendahara Koperasi,</p>
@@ -856,7 +875,7 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
         <div>
           <p style="margin: 0; font-weight: bold;">Manajer Unit Simpan Pinjam,</p>
           <div style="height: 50px;"></div>
-          <span style="font-weight: bold; text-decoration: underline;">${KOPERASI_OFFICIALS.manajerUSP}</span>
+          <span style="font-weight: bold; text-decoration: underline;">${effectiveSpManagerName}</span>
         </div>
         <div>
           <p style="margin: 0; font-weight: bold;">Ketua Koperasi,</p>
@@ -925,30 +944,46 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
             </span>
           </button>
 
-          <button
-            onClick={() => setActiveSubTab('kas_unit_sp')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-              activeSubTab === 'kas_unit_sp'
-                ? 'bg-emerald-700 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
-            }`}
-          >
-            <Wallet className="w-4 h-4" />
-            <span>Kas Unit Simpan Pinjam</span>
-            <span
-              className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${
-                saldoKasUnitSP > 0
-                  ? activeSubTab === 'kas_unit_sp'
-                    ? 'bg-emerald-900 text-emerald-200'
-                    : 'bg-emerald-100 text-emerald-800'
-                  : activeSubTab === 'kas_unit_sp'
-                  ? 'bg-emerald-800 text-white'
-                  : 'bg-slate-200 text-slate-700'
-              }`}
-            >
-              {formatRupiah(saldoKasUnitSP)}
-            </span>
-          </button>
+          {isSpOfficer && (
+            <>
+              <button
+                onClick={() => setActiveSubTab('kas_unit_sp')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+                  activeSubTab === 'kas_unit_sp'
+                    ? 'bg-emerald-700 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+                }`}
+              >
+                <Wallet className="w-4 h-4" />
+                <span>Kas Unit Simpan Pinjam</span>
+                <span
+                  className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${
+                    saldoKasUnitSP > 0
+                      ? activeSubTab === 'kas_unit_sp'
+                        ? 'bg-emerald-900 text-emerald-200'
+                        : 'bg-emerald-100 text-emerald-800'
+                      : activeSubTab === 'kas_unit_sp'
+                      ? 'bg-emerald-800 text-white'
+                      : 'bg-slate-200 text-slate-700'
+                  }`}
+                >
+                  {formatRupiah(saldoKasUnitSP)}
+                </span>
+              </button>
+
+              <button
+                onClick={() => setActiveSubTab('laporan_usp')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+                  activeSubTab === 'laporan_usp'
+                    ? 'bg-emerald-700 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+                }`}
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                <span>Laporan Unit SP</span>
+              </button>
+            </>
+          )}
 
           {isFromSupabase ? (
             <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-300">
@@ -991,6 +1026,38 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
 
       {activeSubTab === 'daftar_pinjaman' && (
         <div className="space-y-6">
+          {isAdminSpWithMember && (
+            <div className="bg-white rounded-2xl border border-slate-200 p-2 shadow-2xs flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => setOnlyMyLoans(false)}
+                  className={`px-3.5 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+                    !onlyMyLoans
+                      ? 'bg-emerald-700 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Semua Pinjaman (Unit SP)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOnlyMyLoans(true)}
+                  className={`px-3.5 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+                    onlyMyLoans
+                      ? 'bg-blue-900 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Pinjaman Pribadi Saya ({currentUser?.memberId})
+                </button>
+              </div>
+              <span className="text-[11px] text-slate-500 px-2 font-medium">
+                {onlyMyLoans ? 'Menampilkan khusus data pinjaman pribadi Anda' : 'Mode operasional Unit Simpan Pinjam'}
+              </span>
+            </div>
+          )}
+
           {/* Metric Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
@@ -1638,6 +1705,24 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
         </div>
       </div>
     </div>
+  )}
+
+  {/* SUB-TAB 3: LAPORAN UNIT SIMPAN PINJAM */}
+  {activeSubTab === 'laporan_usp' && isSpOfficer && (
+    <LaporanUspView
+      members={members}
+      savings={savings}
+      loans={loans}
+      repayments={repayments}
+      cashFlow={cashFlow}
+      spCashMutations={spCashMutations}
+      currentUser={currentUser}
+      spManagerName={spManagerName}
+      isLoading={isLoading}
+      error={error}
+      isFromSupabase={isFromSupabase}
+      onRefresh={onRefreshUspReport || onRefresh}
+    />
   )}
 
   {/* MODAL: TAMBAH & KURANG KAS UNIT SIMPAN PINJAM (PENYESUAIAN SALDO) */}

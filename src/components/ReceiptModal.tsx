@@ -22,11 +22,13 @@ export interface ReceiptData {
 interface ReceiptModalProps {
   receipt: ReceiptData | null;
   onClose: () => void;
+  spManagerName?: string;
 }
 
-export const ReceiptModal: React.FC<ReceiptModalProps> = ({ receipt, onClose }) => {
+export const ReceiptModal: React.FC<ReceiptModalProps> = ({ receipt, onClose, spManagerName }) => {
   if (!receipt) return null;
 
+  const effectiveSpManager = spManagerName || KOPERASI_OFFICIALS.pengelolaSimpanPinjam;
   const defaultOfficer = receipt.officerName || `${KOPERASI_OFFICIALS.bendahara} (Bendahara)`;
 
   const handlePrint = () => {
@@ -104,7 +106,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({ receipt, onClose }) 
         <div class="signature-col">
           <p class="signature-role" style="font-size: 11px;">Pengelola Simpan Pinjam,</p>
           <div class="signature-space" style="height: 48px;"></div>
-          <span class="signature-name" style="font-weight: bold; font-size: 11px; text-decoration: underline;">${KOPERASI_OFFICIALS.pengelolaSimpanPinjam}</span>
+          <span class="signature-name" style="font-weight: bold; font-size: 11px; text-decoration: underline;">${effectiveSpManager}</span>
           <div style="font-size: 10px; color: #64748b; margin-top: 2px;">Unit Simpan Pinjam BJS</div>
         </div>
 

@@ -38,8 +38,14 @@ export async function fetchUserProfile(
     if (profile) {
       const role: UserRole = normalizeRole(profile.role);
       const isActive = profile.is_active !== false;
-      const memberId = profile.member_id || profile.memberId || defaultUsername || '';
-      const name = profile.name || profile.full_name || profile.nama || memberId || 'Pengguna BJS';
+      const rawProfileMemberId = profile.member_id || profile.memberId || undefined;
+      const resolvedMemberId = rawProfileMemberId
+        ? String(rawProfileMemberId)
+        : role === 'anggota' && defaultUsername
+        ? defaultUsername
+        : undefined;
+      const memberIdForDisplay = resolvedMemberId || defaultUsername || '';
+      const name = profile.name || profile.full_name || profile.nama || memberIdForDisplay || 'Pengguna BJS';
       const unitKerja = profile.unit_kerja || profile.unitKerja || profile.job || undefined;
       const managedUnit = (profile.managed_unit || ROLE_TO_MANAGED_UNIT[role] || null) as BusinessUnitId | null;
       const mustChangePassword = Boolean(profile.must_change_password ?? profile.mustChangePassword);
@@ -48,10 +54,10 @@ export async function fetchUserProfile(
 
       return {
         id: userId,
-        username: memberId || defaultUsername || emailUsername || 'bjs-user',
+        username: resolvedMemberId || defaultUsername || emailUsername || 'bjs-user',
         name,
         role,
-        memberId: role === 'anggota' ? memberId : undefined,
+        memberId: resolvedMemberId,
         unitKerja,
         managedUnit,
         isActive,
@@ -430,4 +436,92 @@ export function getCurrentUser(): AuthUser | null {
 
 export function setCurrentUser(_user: AuthUser | null): void {
   // Disengaja kosong: Sesi dikelola sepenuhnya oleh Supabase Auth
+}
+
+export interface OfficialAssignments {
+  unitManagers: Partial<Record<BusinessUnitId, string>>;
+  adminSpName?: string;
+}
+
+/**
+ * Mengambil nama pengelola resmi unit usaha & Admin Simpan Pinjam terbaru dari tabel `profiles`
+ * (dengan pengayaan nama asli dari tabel `members` berdasarkan `member_id`), agar perubahan role
+ * oleh Super Admin langsung terefleksi di seluruh laporan, header unit, dan tanda tangan cetak.
+ */
+export async function fetchOfficialRoleHolders(
+  members?: Member[],
+  currentUser?: AuthUser | null
+): Promise<OfficialAssignments> {
+  const unitManagers: Partial<Record<BusinessUnitId, string>> = {};
+  let adminSpName: string | undefined;
+
+  const memberNameMap = new Map<string, string>();
+  for (const m of members || []) {
+    if (m.id && m.name) {
+      memberNameMap.set(m.id.toUpperCase(), m.name);
+    }
+  }
+
+  const assignRoleHolder = (
+    rawRole: string,
+    rawManagedUnit: string | null | undefined,
+    rawName: string | null | undefined,
+    rawMemberId: string | null | undefined
+  ) => {
+    const role = normalizeRole(rawRole);
+    const cleanMemberId = rawMemberId?.trim();
+    const memberRealName = cleanMemberId ? memberNameMap.get(cleanMemberId.toUpperCase()) : undefined;
+    const trimmedName = rawName?.trim();
+    const resolvedName =
+      trimmedName && trimmedName !== 'Pengguna BJS' && trimmedName !== cleanMemberId
+        ? trimmedName
+        : memberRealName || trimmedName || cleanMemberId;
+
+    if (!resolvedName) return;
+
+    if (role === 'admin_sp') {
+      if (!adminSpName) adminSpName = resolvedName;
+      return;
+    }
+
+    const unit = (rawManagedUnit || ROLE_TO_MANAGED_UNIT[role]) as BusinessUnitId | undefined;
+    if (unit && !unitManagers[unit]) {
+      unitManagers[unit] = resolvedName;
+    }
+  };
+
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('role, member_id, name, managed_unit, is_active, updated_at')
+      .in('role', [
+        'admin_sp',
+        'pengurus_apar',
+        'pengurus_isi_ulang_apar',
+        'pengurus_sembako',
+        'pengurus_atribut',
+      ])
+      .neq('is_active', false)
+      .order('updated_at', { ascending: false });
+
+    if (!error && data) {
+      for (const row of data as any[]) {
+        assignRoleHolder(row.role, row.managed_unit, row.name, row.member_id);
+      }
+    }
+  } catch (err) {
+    console.warn('Gagal memuat nama pengelola resmi dari profiles:', err);
+  }
+
+  // Fallback langsung dari sesi user aktif jika ia sendiri adalah pejabat unit / Admin SP
+  if (currentUser && currentUser.isActive !== false) {
+    assignRoleHolder(
+      currentUser.role,
+      currentUser.managedUnit,
+      currentUser.name,
+      currentUser.memberId || currentUser.username
+    );
+  }
+
+  return { unitManagers, adminSpName };
 }

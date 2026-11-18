@@ -9,7 +9,6 @@ import { SimulasiView } from './components/SimulasiView';
 import { ShuView } from './components/ShuView';
 import { LaporanUnitUsahaView } from './components/LaporanUnitUsahaView';
 import { LaporanView } from './components/LaporanView';
-import { LaporanUspView } from './components/LaporanUspView';
 import { UserManagementView } from './components/UserManagementView';
 import { ReceiptModal, ReceiptData } from './components/ReceiptModal';
 import { LoginView } from './components/LoginView';
@@ -44,7 +43,7 @@ import {
   isSuperAdmin,
 } from './utils/permissions';
 import { supabase } from './lib/supabase';
-import { logoutUser, fetchUserProfile } from './utils/auth';
+import { logoutUser, fetchUserProfile, fetchOfficialRoleHolders, OfficialAssignments } from './utils/auth';
 import {
   fetchMembersFromSupabase,
   updateMemberInSupabase,
@@ -98,7 +97,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [activeUnitId, setActiveUnitId] = useState<'semua' | BusinessUnitId>('semua');
   const [activeSavingsSubTab, setActiveSavingsSubTab] = useState<'pokok_wajib' | 'berjangka' | 'mutasi'>('pokok_wajib');
-  const [activeLoanSubTab, setActiveLoanSubTab] = useState<'daftar_pinjaman' | 'kas_unit_sp'>('daftar_pinjaman');
+  const [activeLoanSubTab, setActiveLoanSubTab] = useState<'daftar_pinjaman' | 'kas_unit_sp' | 'laporan_usp'>('daftar_pinjaman');
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   // Core Data States (Single Source of Truth = Supabase PostgreSQL)
@@ -148,6 +147,11 @@ export default function App() {
   const [reportError, setReportError] = useState<string | null>(null);
   const [isReportFromSupabase, setIsReportFromSupabase] = useState(false);
 
+  // Official Role Holders State (dynamic from Supabase profiles + members)
+  const [officialAssignments, setOfficialAssignments] = useState<OfficialAssignments>({
+    unitManagers: {},
+  });
+
   // Receipt & Modal States
   const [activeReceipt, setActiveReceipt] = useState<ReceiptData | null>(null);
   const [isDepositModalOpen, setIsDepositModalOpen] = useState(false);
@@ -181,6 +185,7 @@ export default function App() {
     setIsDashboardFromSupabase(false);
     setReportError(null);
     setIsReportFromSupabase(false);
+    setOfficialAssignments({ unitManagers: {} });
     setActiveReceipt(null);
     setIsDepositModalOpen(false);
     setIsBerjangkaModalOpen(false);
@@ -430,6 +435,16 @@ export default function App() {
     [currentUser]
   );
 
+  const reloadOfficials = useCallback(
+    async (membersList?: Member[], userOverride?: AuthUser | null) => {
+      const actor = userOverride !== undefined ? userOverride : currentUser;
+      const resolvedMembers = membersList || members;
+      const assignments = await fetchOfficialRoleHolders(resolvedMembers, actor);
+      setOfficialAssignments(assignments);
+    },
+    [currentUser, members]
+  );
+
   const loadAuthorizedDataForUser = useCallback(
     async (user: AuthUser) => {
       if (isSuperAdmin(user)) {
@@ -442,6 +457,7 @@ export default function App() {
           reloadCashFlow(),
           reloadBusinessUnits(null),
           reloadAuditLogs(),
+          reloadOfficials(loadedMembers, user),
         ]);
         return;
       }
@@ -454,6 +470,7 @@ export default function App() {
           reloadSavings(loadedMembers),
           reloadLoans(loadedMembers),
           reloadCashFlow(),
+          reloadOfficials(loadedMembers, user),
           fetchSpCashMutationsFromSupabase().then((spRes) => {
             if (spRes.fromSupabase && spRes.mutations.length > 0) {
               setSpCashMutations(spRes.mutations);
@@ -465,14 +482,27 @@ export default function App() {
 
       if (isBusinessUnitManager(user)) {
         const managedUnit = getManagedBusinessUnit(user);
-        setMembers([]);
-        setSavings([]);
-        setLoans([]);
-        setRepayments([]);
         setCashFlow([]);
         setSpCashMutations([]);
         setAuditLogs([]);
-        await reloadBusinessUnits(managedUnit);
+        if (user.memberId) {
+          const loadedMembers = await reloadMembers();
+          await Promise.all([
+            reloadBusinessUnits(managedUnit),
+            reloadSavings(loadedMembers),
+            reloadLoans(loadedMembers),
+            reloadOfficials(loadedMembers, user),
+          ]);
+        } else {
+          setMembers([]);
+          setSavings([]);
+          setLoans([]);
+          setRepayments([]);
+          await Promise.all([
+            reloadBusinessUnits(managedUnit),
+            reloadOfficials([], user),
+          ]);
+        }
         return;
       }
 
@@ -484,6 +514,7 @@ export default function App() {
         reloadSavings(loadedMembers),
         reloadLoans(loadedMembers),
         reloadDashboard(user),
+        reloadOfficials(loadedMembers, user),
       ]);
     },
     [
@@ -493,6 +524,7 @@ export default function App() {
       reloadDashboard,
       reloadLoans,
       reloadMembers,
+      reloadOfficials,
       reloadReport,
       reloadSavings,
     ]
@@ -1028,10 +1060,14 @@ export default function App() {
               }}
               userRole={userRole}
               currentUser={currentUser}
-              isLoading={isDashboardLoading}
+              isLoading={isDashboardLoading || isMembersLoading || isSavingsLoading || isLoansLoading}
               error={dashboardError}
               isFromSupabase={isDashboardFromSupabase || isMembersFromSupabase || isSavingsFromSupabase}
-              onRefresh={() => reloadDashboard()}
+              onRefresh={() =>
+                currentUser && (isBusinessUnitManager(currentUser) || isAdminSp(currentUser))
+                  ? loadAuthorizedDataForUser(currentUser)
+                  : reloadDashboard()
+              }
             />
           )}
 
@@ -1081,6 +1117,7 @@ export default function App() {
               setIsBerjangkaModalOpen={setIsBerjangkaModalOpen}
               userRole={userRole}
               currentUser={currentUser}
+              spManagerName={officialAssignments.adminSpName}
               isLoading={isSavingsLoading}
               error={savingsError}
               isFromSupabase={isSavingsFromSupabase}
@@ -1114,26 +1151,14 @@ export default function App() {
               hasLocalUnsyncedSpCash={localSpCashQueue.length > 0}
               activeSubTab={activeLoanSubTab}
               setActiveSubTab={setActiveLoanSubTab}
-              isLoading={isLoansLoading}
-              error={loansError}
-              isFromSupabase={isLoansFromSupabase}
-              onRefresh={() => reloadLoans()}
-            />
-          )}
-
-          {activeTab === 'laporan_usp' && canAccessTab(currentUser, 'laporan_usp') && (
-            <LaporanUspView
-              members={members}
               savings={savings}
-              loans={loans}
-              repayments={repayments}
               cashFlow={cashFlow}
-              spCashMutations={spCashMutations}
-              currentUser={currentUser}
+              spManagerName={officialAssignments.adminSpName}
+              onRefreshUspReport={() => currentUser && loadAuthorizedDataForUser(currentUser)}
               isLoading={isLoansLoading || isSavingsLoading || isCashFlowLoading}
               error={loansError || savingsError || cashFlowError}
-              isFromSupabase={isLoansFromSupabase || isSavingsFromSupabase || isCashFlowFromSupabase}
-              onRefresh={() => loadAuthorizedDataForUser(currentUser)}
+              isFromSupabase={isLoansFromSupabase}
+              onRefresh={() => reloadLoans()}
             />
           )}
 
@@ -1148,6 +1173,7 @@ export default function App() {
               currentUser={currentUser}
               activeUnitId={activeUnitId}
               setActiveUnitId={setActiveUnitId}
+              dynamicUnitManagers={officialAssignments.unitManagers}
               isLoading={isBusinessLoading}
               error={businessError}
               isFromSupabase={isBusinessFromSupabase}
@@ -1215,7 +1241,11 @@ export default function App() {
           )}
 
           {activeTab === 'manajemen_user' && canAccessTab(currentUser, 'manajemen_user') && (
-            <UserManagementView currentUser={currentUser} members={members} />
+            <UserManagementView
+              currentUser={currentUser}
+              members={members}
+              onProfilesUpdated={() => reloadOfficials()}
+            />
           )}
         </main>
 
@@ -1230,7 +1260,11 @@ export default function App() {
       </div>
 
       {/* Official Receipt Printable Modal */}
-      <ReceiptModal receipt={activeReceipt} onClose={() => setActiveReceipt(null)} />
+      <ReceiptModal
+        receipt={activeReceipt}
+        onClose={() => setActiveReceipt(null)}
+        spManagerName={officialAssignments.adminSpName}
+      />
 
       {/* Change Password Modal */}
       {currentUser && (

@@ -5,7 +5,6 @@ export type AppNavTab =
   | 'anggota'
   | 'simpanan'
   | 'pinjaman'
-  | 'laporan_usp'
   | 'unit_usaha'
   | 'shu'
   | 'simulasi'
@@ -69,6 +68,26 @@ export function isAnggotaUser(user?: AuthUser | null): boolean {
   return !isSuperAdmin(user) && !isAdminSp(user) && !isBusinessUnitManager(user);
 }
 
+/**
+ * Mengembalikan true bagi pengguna yang hanya boleh melihat data keanggotaan pribadinya
+ * pada modul Dashboard, Anggota, Simpanan, Pinjaman, dan Simulasi (Anggota biasa
+ * maupun Pengelola Unit Usaha yang merangkap sebagai anggota).
+ */
+export function usesPersonalMemberScope(user?: AuthUser | null): boolean {
+  if (!user || user.isActive === false) return true;
+  return !isSuperAdmin(user) && !isAdminSp(user);
+}
+
+/**
+ * Mengembalikan true bagi pengguna yang memiliki portal/informasi keanggotaan pribadi
+ * pada Dashboard & Profil Anggota (Anggota biasa, Pengelola Unit Usaha, dan Admin SP
+ * yang juga terdaftar sebagai anggota koperasi via memberId).
+ */
+export function hasPersonalMemberPortal(user?: AuthUser | null): boolean {
+  if (!user || user.isActive === false) return false;
+  return usesPersonalMemberScope(user) || (isAdminSp(user) && Boolean(user.memberId));
+}
+
 export function canManageBusinessUnit(user: AuthUser | null | undefined, unitId: BusinessUnitId): boolean {
   if (isSuperAdmin(user)) return true;
   const managed = getManagedBusinessUnit(user);
@@ -98,8 +117,8 @@ export function getRoleDisplayLabel(user?: AuthUser | null): string {
 
 export function getDefaultTabForUser(user?: AuthUser | null): AppNavTab {
   if (isSuperAdmin(user)) return 'dashboard';
-  if (isAdminSp(user)) return 'pinjaman';
-  if (isBusinessUnitManager(user)) return 'unit_usaha';
+  if (isAdminSp(user)) return user?.memberId ? 'dashboard' : 'pinjaman';
+  if (isBusinessUnitManager(user)) return user?.memberId ? 'dashboard' : 'unit_usaha';
   return 'dashboard';
 }
 
@@ -109,16 +128,26 @@ export function canAccessTab(user: AuthUser | null | undefined, tab: AppNavTab):
 
   if (isAdminSp(user)) {
     return (
+      (Boolean(user.memberId) && tab === 'dashboard') ||
       tab === 'anggota' ||
       tab === 'simpanan' ||
       tab === 'pinjaman' ||
-      tab === 'laporan_usp' ||
       tab === 'simulasi'
     );
   }
 
   if (isBusinessUnitManager(user)) {
-    return tab === 'unit_usaha';
+    if (tab === 'unit_usaha') return true;
+    if (user.memberId) {
+      return (
+        tab === 'dashboard' ||
+        tab === 'anggota' ||
+        tab === 'simpanan' ||
+        tab === 'pinjaman' ||
+        tab === 'simulasi'
+      );
+    }
+    return false;
   }
 
   // Anggota

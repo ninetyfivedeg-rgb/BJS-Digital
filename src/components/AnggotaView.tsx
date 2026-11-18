@@ -30,7 +30,7 @@ import {
   calculateJoinDateFromSavings,
 } from '../utils/storage';
 import { printHtmlContent } from '../utils/printHelper';
-import { isAdminSp, isAnggotaUser, isSuperAdmin } from '../utils/permissions';
+import { isAdminSp, isSuperAdmin, usesPersonalMemberScope } from '../utils/permissions';
 
 interface AnggotaViewProps {
   members: Member[];
@@ -74,6 +74,7 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
   const [editingMember, setEditingMember] = useState<Member | null>(null);
   const [memberToDelete, setMemberToDelete] = useState<Member | null>(null);
   const [detailTab, setDetailTab] = useState<'ringkasan' | 'simpanan' | 'pinjaman' | 'kartu'>('ringkasan');
+  const [adminSpMode, setAdminSpMode] = useState<'profil_saya' | 'direktori'>('profil_saya');
 
   // Auto-generate next registration ID
   const nextRegisterId = getNextMemberId(members);
@@ -303,10 +304,12 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
     name: '',
     role: userRole,
   };
-  const isAnggota = isAnggotaUser(effectiveUser);
+  const isPersonalOnly = usesPersonalMemberScope(effectiveUser);
   const canEditMembers = isSuperAdmin(effectiveUser);
   const isAdminSpReadOnly = isAdminSp(effectiveUser);
-  const myMemberId = (currentUser?.memberId || (isAnggota ? currentUser?.username : undefined) || 'BJS-001').trim();
+  const isAdminSpWithMember = isAdminSpReadOnly && Boolean(currentUser?.memberId);
+  const isAnggota = isPersonalOnly || (isAdminSpWithMember && adminSpMode === 'profil_saya');
+  const myMemberId = (currentUser?.memberId || (isPersonalOnly ? currentUser?.username : undefined) || 'BJS-001').trim();
   const myMember: Member = members.find((m) => m.id.toLowerCase() === myMemberId.toLowerCase()) || {
     id: myMemberId,
     name: currentUser?.name || 'Anggota Koperasi',
@@ -321,10 +324,42 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
     initialTotalSavings: 0,
   };
 
-  // IF USER IS ANGGOTA: RENDER ONLY PERSONAL MEMBER PROFILE & CARD (HIDE OTHER 216 MEMBERS)
+  const adminSpModeSwitcher = isAdminSpWithMember ? (
+    <div className="bg-white rounded-2xl border border-slate-200 p-2 shadow-2xs flex flex-wrap items-center justify-between gap-2">
+      <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
+        <button
+          type="button"
+          onClick={() => setAdminSpMode('profil_saya')}
+          className={`px-3.5 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+            adminSpMode === 'profil_saya'
+              ? 'bg-blue-900 text-white shadow-xs'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          Profil Keanggotaan Saya ({myMember.id})
+        </button>
+        <button
+          type="button"
+          onClick={() => setAdminSpMode('direktori')}
+          className={`px-3.5 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+            adminSpMode === 'direktori'
+              ? 'bg-emerald-700 text-white shadow-xs'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          Direktori Anggota (Unit SP &bull; {members.length})
+        </button>
+      </div>
+      <span className="text-[11px] text-slate-500 px-2 font-medium">
+        Akses Ganda: Anggota Koperasi & Admin Unit Simpan Pinjam
+      </span>
+    </div>
+  ) : null;
+
+  // IF USER IS ANGGOTA OR ADMIN SP VIEWING PERSONAL PROFILE: RENDER PERSONAL MEMBER PROFILE & CARD
   if (isAnggota) {
     const sav = calculateMemberSavings(myMember.id, savings);
-    const memLoans = loans.filter((l) => l.memberId === myMember.id);
+    const memLoans = loans.filter((l) => l.memberId.toLowerCase() === myMember.id.toLowerCase());
     const activeLoans = memLoans.filter((l) => l.status === 'aktif' || l.status === 'dicairkan');
     const totalRemainingDebt = activeLoans.reduce(
       (acc, curr) => acc + calculateLoanRemaining(curr).remainingPrincipal,
@@ -333,6 +368,7 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
 
     return (
       <div className="space-y-6">
+        {adminSpModeSwitcher}
         {/* Top Header Card */}
         <div className="rounded-2xl bg-gradient-to-r from-blue-950 via-blue-900 to-red-950 p-6 text-white shadow-lg border border-blue-800/40 relative overflow-hidden">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -601,6 +637,7 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
 
   return (
     <div className="space-y-6">
+      {adminSpModeSwitcher}
       {/* Top Banner with Blue & Maroon Gradient */}
       <div className="rounded-2xl bg-gradient-to-r from-blue-950 via-blue-900 to-red-950 p-6 text-white shadow-lg border border-blue-800/40 relative overflow-hidden">
         <div className="absolute right-0 top-0 translate-x-12 -translate-y-12 w-64 h-64 bg-red-600/10 rounded-full blur-2xl pointer-events-none"></div>

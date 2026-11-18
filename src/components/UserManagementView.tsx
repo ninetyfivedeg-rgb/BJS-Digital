@@ -19,6 +19,7 @@ import { getRoleDisplayLabel, ROLE_TO_MANAGED_UNIT } from '../utils/permissions'
 interface UserManagementViewProps {
   currentUser: AuthUser | null;
   members?: Member[];
+  onProfilesUpdated?: () => void;
 }
 
 const ROLE_OPTIONS: { value: UserRole; label: string }[] = [
@@ -40,7 +41,11 @@ const UNIT_OPTIONS: { value: '' | BusinessUnitId; label: string }[] = [
   { value: 'atribut', label: 'Unit Penjualan Atribut' },
 ];
 
-export const UserManagementView: React.FC<UserManagementViewProps> = ({ currentUser, members = [] }) => {
+export const UserManagementView: React.FC<UserManagementViewProps> = ({
+  currentUser,
+  members = [],
+  onProfilesUpdated,
+}) => {
   const [profiles, setProfiles] = useState<UserProfileRecord[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -166,6 +171,9 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({ currentU
       setFeedback({ type: 'success', text: res.message });
       setEditingProfile(null);
       await loadProfiles();
+      if (onProfilesUpdated) {
+        onProfilesUpdated();
+      }
     } else {
       setFeedback({ type: 'error', text: res.message });
     }

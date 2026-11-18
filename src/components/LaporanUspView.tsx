@@ -34,6 +34,7 @@ interface LaporanUspViewProps {
   cashFlow: CashFlowRecord[];
   spCashMutations: SimpanPinjamCashMutation[];
   currentUser?: AuthUser | null;
+  spManagerName?: string;
   isLoading?: boolean;
   error?: string | null;
   isFromSupabase?: boolean;
@@ -47,11 +48,13 @@ export const LaporanUspView: React.FC<LaporanUspViewProps> = ({
   repayments,
   cashFlow,
   spCashMutations,
+  spManagerName,
   isLoading = false,
   error = null,
   isFromSupabase = true,
   onRefresh,
 }) => {
+  const effectiveSpManagerName = spManagerName || KOPERASI_OFFICIALS.manajerUSP;
   const summary = useMemo(
     () =>
       computeCooperativeSummary(
@@ -132,8 +135,8 @@ export const LaporanUspView: React.FC<LaporanUspViewProps> = ({
           <tr><td class="label"><strong>Total Simpanan Anggota</strong></td><td class="colon">:</td><td class="value">${formatRupiah(summary.totalSavings.total)}</td></tr>
           <tr><td class="label">Total Plafon Disalurkan</td><td class="colon">:</td><td class="value">${formatRupiah(summary.totalDisbursedLoans)}</td></tr>
           <tr><td class="label">Sisa Pokok Piutang Berjalan</td><td class="colon">:</td><td class="value">${formatRupiah(summary.totalOutstandingLoans)}</td></tr>
-          <tr><td class="label">Pendapatan Jasa Bunga Pinjaman</td><td class="colon">:</td><td class="value">${formatRupiah(summary.totalInterestEarned)}</td></tr>
-          <tr><td class="label">Total Biaya Administrasi 1%</td><td class="colon">:</td><td class="value">${formatRupiah(totalAdminFeeCollected)}</td></tr>
+          <tr><td class="label">Pendapatan Jasa Bunga Pinjaman (Keuntungan Koperasi)</td><td class="colon">:</td><td class="value">${formatRupiah(summary.totalInterestEarned)}</td></tr>
+          <tr><td class="label">Dana Biaya Administrasi 1% (Kas Terpisah / Non-Laba Koperasi)</td><td class="colon">:</td><td class="value">${formatRupiah(totalAdminFeeCollected)}</td></tr>
           <tr><td class="label">Saldo Kas Operasional Unit SP</td><td class="colon">:</td><td class="value">${formatRupiah(summary.kasUnitSP || 0)}</td></tr>
         </table>
       </div>
@@ -159,7 +162,7 @@ export const LaporanUspView: React.FC<LaporanUspViewProps> = ({
       <div class="signatures">
         <div style="width:45%;">
           <p style="font-size:11px;margin-bottom:55px;">Pengelola Unit Simpan Pinjam,</p>
-          <p style="font-size:11px;font-weight:800;text-decoration:underline;">${KOPERASI_OFFICIALS.manajerUSP}</p>
+          <p style="font-size:11px;font-weight:800;text-decoration:underline;">${effectiveSpManagerName}</p>
         </div>
         <div style="width:45%;">
           <p style="font-size:11px;margin-bottom:55px;">Mengetahui, Ketua Koperasi,</p>
@@ -191,7 +194,7 @@ export const LaporanUspView: React.FC<LaporanUspViewProps> = ({
             Laporan Operasional Unit Simpan Pinjam
           </h3>
           <p className="text-xs text-slate-500">
-            Rekapitulasi Simpanan Anggota, Portofolio Pinjaman, Top Up, Pendapatan Jasa & Kas Operasional Unit SP
+            Rekapitulasi Simpanan Anggota, Portofolio Pinjaman, Top Up, Jasa Bunga Koperasi & Kas Terpisah Biaya Admin 1%
           </p>
         </div>
 
@@ -225,7 +228,7 @@ export const LaporanUspView: React.FC<LaporanUspViewProps> = ({
       )}
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs">
           <div className="flex items-center justify-between text-slate-500 mb-2">
             <span className="text-xs font-bold">Total Simpanan USP</span>
@@ -252,17 +255,29 @@ export const LaporanUspView: React.FC<LaporanUspViewProps> = ({
           </p>
         </div>
 
-        <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs">
+        <div className="bg-white rounded-2xl border border-emerald-200 p-4 shadow-xs">
           <div className="flex items-center justify-between text-slate-500 mb-2">
-            <span className="text-xs font-bold">Pendapatan Jasa & Admin</span>
-            <TrendingUp className="w-4 h-4 text-amber-600" />
+            <span className="text-xs font-bold">Pendapatan Jasa Bunga</span>
+            <TrendingUp className="w-4 h-4 text-emerald-700" />
           </div>
           <p className="text-xl font-black font-mono text-emerald-800">
-            {formatRupiah(summary.totalInterestEarned + totalAdminFeeCollected)}
+            {formatRupiah(summary.totalInterestEarned)}
           </p>
-          <p className="text-[11px] text-slate-500 mt-1">
-            Bunga {formatRupiah(summary.totalInterestEarned)} • Admin 1%{' '}
+          <p className="text-[11px] text-emerald-700 mt-1">
+            Masuk sebagai keuntungan / SHU koperasi
+          </p>
+        </div>
+
+        <div className="bg-amber-50/40 rounded-2xl border border-amber-200 p-4 shadow-xs">
+          <div className="flex items-center justify-between text-amber-900 mb-2">
+            <span className="text-xs font-bold">Biaya Admin 1% (Terpisah)</span>
+            <Wallet className="w-4 h-4 text-amber-700" />
+          </div>
+          <p className="text-xl font-black font-mono text-amber-900">
             {formatRupiah(totalAdminFeeCollected)}
+          </p>
+          <p className="text-[11px] text-amber-800 mt-1">
+            Kas operasional SP, tidak dicatat sebagai laba koperasi
           </p>
         </div>
 

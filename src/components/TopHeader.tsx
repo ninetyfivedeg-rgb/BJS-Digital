@@ -3,7 +3,7 @@ import { Menu, Calendar, ShieldCheck, User, KeyRound, LogOut } from 'lucide-reac
 import { formatDateIndo } from '../utils/formatters';
 import { NavTab } from './Sidebar';
 import { AuthUser } from '../types';
-import { getRoleDisplayLabel, isAnggotaUser } from '../utils/permissions';
+import { getRoleDisplayLabel, hasPersonalMemberPortal, isAnggotaUser, usesPersonalMemberScope } from '../utils/permissions';
 
 interface TopHeaderProps {
   activeTab: NavTab;
@@ -27,22 +27,28 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
       title: 'Dashboard Operasional',
       subtitle: 'Ringkasan Eksekutif & Statistik Finansial',
     },
-    anggota: {
-      title: 'Buku Data Anggota',
-      subtitle: 'Daftar Anggota, Nomor Registrasi & Unit Kerja',
-    },
+    anggota: hasPersonalMemberPortal(currentUser)
+      ? {
+          title: 'Profil Anggota Saya',
+          subtitle: 'Kartu Anggota Digital, Simpanan & Pinjaman Pribadi',
+        }
+      : {
+          title: 'Buku Data Anggota',
+          subtitle: 'Daftar Anggota, Nomor Registrasi & Unit Kerja',
+        },
     simpanan: {
       title: 'Simpanan Koperasi',
       subtitle: 'Simpanan Pokok, Wajib & Berjangka 6%',
     },
-    pinjaman: {
-      title: 'Pinjaman & Angsuran',
-      subtitle: 'Plafon, Bunga Flat 1,1%/Bulan & Jadwal Amortisasi',
-    },
-    laporan_usp: {
-      title: 'Laporan Unit Simpan Pinjam',
-      subtitle: 'Rekapitulasi Simpanan, Pinjaman, Top Up & Kas Operasional SP',
-    },
+    pinjaman: usesPersonalMemberScope(currentUser)
+      ? {
+          title: 'Pinjaman Saya',
+          subtitle: 'Plafon, Bunga Flat 1,1%/Bulan & Jadwal Amortisasi',
+        }
+      : {
+          title: 'Unit Simpan Pinjam',
+          subtitle: 'Pinjaman, Angsuran, Kas Unit SP & Laporan Unit Simpan Pinjam',
+        },
     unit_usaha: {
       title: 'Laporan Unit Usaha',
       subtitle: 'Penjualan Alat Kebakaran, Isi Ulang APAR, Sembako & Atribut',

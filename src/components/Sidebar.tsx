@@ -30,10 +30,12 @@ import {
   canAccessTab,
   getManagedBusinessUnit,
   getRoleDisplayLabel,
+  hasPersonalMemberPortal,
   isAnggotaUser,
   isBusinessUnitManager,
   isSimpanPinjamOfficer,
   isSuperAdmin,
+  usesPersonalMemberScope,
 } from '../utils/permissions';
 
 export type NavTab = AppNavTab;
@@ -43,8 +45,8 @@ interface SidebarProps {
   setActiveTab: (tab: NavTab) => void;
   activeSavingsSubTab?: 'pokok_wajib' | 'berjangka' | 'mutasi';
   setActiveSavingsSubTab?: (tab: 'pokok_wajib' | 'berjangka' | 'mutasi') => void;
-  activeLoanSubTab?: 'daftar_pinjaman' | 'kas_unit_sp';
-  setActiveLoanSubTab?: (tab: 'daftar_pinjaman' | 'kas_unit_sp') => void;
+  activeLoanSubTab?: 'daftar_pinjaman' | 'kas_unit_sp' | 'laporan_usp';
+  setActiveLoanSubTab?: (tab: 'daftar_pinjaman' | 'kas_unit_sp' | 'laporan_usp') => void;
   activeUnitId?: 'semua' | BusinessUnitId;
   setActiveUnitId?: (unitId: 'semua' | BusinessUnitId) => void;
   pendingLoansCount: number;
@@ -81,9 +83,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'mutasi', label: 'Mutasi Simpanan', icon: FileSpreadsheet },
   ];
 
-  const loanSubTabs: { id: 'daftar_pinjaman' | 'kas_unit_sp'; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+  const loanSubTabs: { id: 'daftar_pinjaman' | 'kas_unit_sp' | 'laporan_usp'; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
     { id: 'daftar_pinjaman', label: 'Pinjaman & Angsuran', icon: HandCoins },
     { id: 'kas_unit_sp', label: 'Kas Unit Simpan Pinjam', icon: Wallet },
+    { id: 'laporan_usp', label: 'Laporan Unit SP', icon: FileSpreadsheet },
   ];
 
   const allBusinessSubUnits: { id: 'semua' | BusinessUnitId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
@@ -95,6 +98,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   ];
 
   const isAnggota = isAnggotaUser(currentUser);
+  const isPersonalMemberMenu = usesPersonalMemberScope(currentUser);
+  const hasPersonalProfileMenu = hasPersonalMemberPortal(currentUser);
   const isOfficerSP = isSimpanPinjamOfficer(currentUser);
   const isUnitMgr = isBusinessUnitManager(currentUser);
   const managedUnit = getManagedBusinessUnit(currentUser);
@@ -118,26 +123,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
     {
       id: 'anggota',
-      label: isAnggota ? 'Profil Anggota Saya' : 'Buku Data Anggota',
+      label: hasPersonalProfileMenu ? 'Profil Anggota Saya' : 'Buku Data Anggota',
       icon: Users,
     },
     {
       id: 'simpanan',
-      label: isAnggota ? 'Simpanan Saya' : 'Simpanan Anggota',
+      label: isPersonalMemberMenu ? 'Simpanan Saya' : 'Simpanan Anggota',
       icon: PiggyBank,
       hasSubMenu: true,
     },
     {
       id: 'pinjaman',
-      label: isAnggota ? 'Pinjaman Saya' : 'Pinjaman & Kas SP',
+      label: isPersonalMemberMenu ? 'Pinjaman Saya' : 'Unit Simpan Pinjam',
       icon: HandCoins,
       badge: isOfficerSP && pendingLoansCount > 0 ? pendingLoansCount : undefined,
       hasSubMenu: isOfficerSP,
-    },
-    {
-      id: 'laporan_usp',
-      label: 'Laporan Unit SP',
-      icon: FileSpreadsheet,
     },
     {
       id: 'unit_usaha',
@@ -196,7 +196,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     setMobileOpen(false);
   };
 
-  const handleSelectLoanSub = (subId: 'daftar_pinjaman' | 'kas_unit_sp') => {
+  const handleSelectLoanSub = (subId: 'daftar_pinjaman' | 'kas_unit_sp' | 'laporan_usp') => {
     setActiveTab('pinjaman');
     if (setActiveLoanSubTab) {
       setActiveLoanSubTab(subId);

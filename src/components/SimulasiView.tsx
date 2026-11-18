@@ -29,7 +29,7 @@ import {
 } from '../types';
 import { formatRupiah, formatNumber } from '../utils/formatters';
 import { calculateShuSimulation, calculateMembersShuDetails } from '../services/shuService';
-import { isAnggotaUser, isSuperAdmin } from '../utils/permissions';
+import { isSuperAdmin, usesPersonalMemberScope } from '../utils/permissions';
 
 interface SimulasiViewProps {
   members: Member[];
@@ -60,7 +60,7 @@ export const SimulasiView: React.FC<SimulasiViewProps> = ({
     name: '',
     role: userRole,
   };
-  const isAnggota = isAnggotaUser(effectiveUser);
+  const isAnggota = usesPersonalMemberScope(effectiveUser);
   const canViewShuWhatIf = isSuperAdmin(effectiveUser);
   const [activeTab, setActiveTab] = useState<'pinjaman' | 'simpanan' | 'shu'>('pinjaman');
 

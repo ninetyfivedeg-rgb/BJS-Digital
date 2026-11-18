@@ -25,7 +25,7 @@ import { formatRupiah, formatDateIndo } from '../utils/formatters';
 import { calculateMemberSavings } from '../utils/storage';
 import { printHtmlContent } from '../utils/printHelper';
 import { ReceiptData } from './ReceiptModal';
-import { isAnggotaUser, isSimpanPinjamOfficer } from '../utils/permissions';
+import { isAdminSp, isSimpanPinjamOfficer, usesPersonalMemberScope } from '../utils/permissions';
 
 interface SimpananViewProps {
   members: Member[];
@@ -44,6 +44,7 @@ interface SimpananViewProps {
   onCompleteBerjangka?: (txId: string) => void;
   onDeleteSavings?: (txId: string) => void;
   onBatchAddWajib?: (transactions: Omit<SavingsTransaction, 'id'>[]) => Promise<{ success: boolean; message: string; data?: SavingsTransaction[]; error?: string }> | void;
+  spManagerName?: string;
   isLoading?: boolean;
   error?: string | null;
   isFromSupabase?: boolean;
@@ -67,11 +68,13 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
   onCompleteBerjangka,
   onDeleteSavings,
   onBatchAddWajib,
+  spManagerName,
   isLoading = false,
   error = null,
   isFromSupabase = false,
   onRefresh,
 }) => {
+  const effectiveSpManagerName = spManagerName || KOPERASI_OFFICIALS.manajerSimpanPinjam;
   // Navigation tabs:
   // 1) 'pokok_wajib' (Pilar 1: Ekuitas Pokok & Wajib)
   // 2) 'berjangka' (Pilar 2: Simpanan Berjangka 6% p.a.)
@@ -98,6 +101,7 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
   const [berjangkaSearch, setBerjangkaSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<'semua' | SavingsType>('semua');
   const [directionFilter, setDirectionFilter] = useState<'semua' | 'setor' | 'tarik'>('semua');
+  const [onlyMySavings, setOnlyMySavings] = useState(false);
 
   // Filter for Berjangka status
   const [berjangkaStatusFilter, setBerjangkaStatusFilter] = useState<'semua' | 'aktif' | 'selesai'>('semua');
@@ -194,14 +198,16 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
     name: '',
     role: userRole,
   };
-  const isAnggota = isAnggotaUser(effectiveUser);
+  const isAnggota = usesPersonalMemberScope(effectiveUser);
+  const isAdminSpWithMember = isAdminSp(effectiveUser) && Boolean(currentUser?.memberId);
   const canWriteSimpanan = isSimpanPinjamOfficer(effectiveUser);
   const activeMemberId = (currentUser?.memberId || (isAnggota ? currentUser?.username : undefined))?.trim().toLowerCase();
-  const effectiveSavings = isAnggota && activeMemberId
+  const scopeToPersonalSavings = (isAnggota || (isAdminSpWithMember && onlyMySavings)) && Boolean(activeMemberId);
+  const effectiveSavings = scopeToPersonalSavings
     ? savings.filter((s) => s.memberId?.trim().toLowerCase() === activeMemberId)
     : savings;
 
-  const effectiveMembers = isAnggota && activeMemberId
+  const effectiveMembers = scopeToPersonalSavings
     ? members.filter((m) => m.id?.trim().toLowerCase() === activeMemberId)
     : members;
 
@@ -429,7 +435,7 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
         <div class="signature-col">
           <p class="signature-role" style="margin: 0; font-size: 11px;">Manajer Simpan Pinjam,</p>
           <div class="signature-space" style="height: 48px;"></div>
-          <span class="signature-name" style="font-weight: bold; font-size: 11px; text-decoration: underline;">${KOPERASI_OFFICIALS.manajerSimpanPinjam}</span>
+          <span class="signature-name" style="font-weight: bold; font-size: 11px; text-decoration: underline;">${effectiveSpManagerName}</span>
           <div style="font-size: 9px; color: #64748b; margin-top: 2px;">Unit Simpan Pinjam</div>
         </div>
 
@@ -700,6 +706,38 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
         <div className="p-3.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 text-xs flex items-center gap-2.5 shadow-2xs animate-pulse">
           <div className="w-4 h-4 border-2 border-blue-900 border-t-transparent rounded-full animate-spin shrink-0" />
           <span className="font-semibold">Mengambil data transaksi simpanan dari database Supabase PostgreSQL...</span>
+        </div>
+      )}
+
+      {isAdminSpWithMember && (
+        <div className="bg-white rounded-2xl border border-slate-200 p-2 shadow-2xs flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
+            <button
+              type="button"
+              onClick={() => setOnlyMySavings(false)}
+              className={`px-3.5 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+                !onlyMySavings
+                  ? 'bg-blue-900 text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Semua Anggota (Unit SP)
+            </button>
+            <button
+              type="button"
+              onClick={() => setOnlyMySavings(true)}
+              className={`px-3.5 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+                onlyMySavings
+                  ? 'bg-emerald-700 text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Simpanan Pribadi Saya ({currentUser?.memberId})
+            </button>
+          </div>
+          <span className="text-[11px] text-slate-500 px-2 font-medium">
+            {onlyMySavings ? 'Menampilkan khusus rekening simpanan pribadi Anda' : 'Mode operasional Unit Simpan Pinjam'}
+          </span>
         </div>
       )}
 
@@ -1988,7 +2026,7 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                     <p className="text-[11px] font-semibold text-slate-600">Manajer Unit SP,</p>
                     <div className="h-10"></div>
                     <p className="font-bold text-slate-900 border-t border-slate-300 pt-1 text-xs">
-                      {KOPERASI_OFFICIALS.manajerSimpanPinjam}
+                      {effectiveSpManagerName}
                     </p>
                     <p className="text-[10px] text-slate-400">Manajer Unit</p>
                   </div>
