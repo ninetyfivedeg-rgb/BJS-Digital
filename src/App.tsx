@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Sidebar, NavTab } from './components/Sidebar';
 import { TopHeader } from './components/TopHeader';
 import { DashboardView } from './components/DashboardView';
@@ -9,16 +9,18 @@ import { SimulasiView } from './components/SimulasiView';
 import { ShuView } from './components/ShuView';
 import { LaporanUnitUsahaView } from './components/LaporanUnitUsahaView';
 import { LaporanView } from './components/LaporanView';
+import { LaporanUspView } from './components/LaporanUspView';
+import { UserManagementView } from './components/UserManagementView';
 import { ReceiptModal, ReceiptData } from './components/ReceiptModal';
 import { LoginView } from './components/LoginView';
 import { ChangePasswordModal } from './components/ChangePasswordModal';
+import { AuditLogView } from './components/AuditLogView';
 import {
   Member,
   SavingsTransaction,
   Loan,
   LoanRepayment,
   CashFlowRecord,
-  LoanScheduleItem,
   BusinessUnitTransaction,
   BusinessUnitId,
   UserRole,
@@ -26,29 +28,21 @@ import {
   SimpanPinjamCashMutation,
   AuditLog,
 } from './types';
-import { BUSINESS_UNITS_CONFIG } from './data/mockData';
 import {
-  loadMembers,
-  saveMembers,
-  loadSavings,
-  saveSavings,
-  loadLoans,
-  saveLoans,
-  loadRepayments,
-  saveRepayments,
-  loadCashFlow,
-  saveCashFlow,
-  loadBusinessTransactions,
-  saveBusinessTransactions,
   loadSpCashMutations,
-  saveSpCashMutations,
-  loadAuditLogs,
-  saveAuditLogs,
   calculateBusinessUnitReports,
   computeCooperativeSummary,
-  resetToDemoData,
+  clearSensitiveLocalCaches,
   getNextMemberId,
 } from './utils/storage';
+import {
+  canAccessTab,
+  getDefaultTabForUser,
+  getManagedBusinessUnit,
+  isAdminSp,
+  isBusinessUnitManager,
+  isSuperAdmin,
+} from './utils/permissions';
 import { supabase } from './lib/supabase';
 import { logoutUser, fetchUserProfile } from './utils/auth';
 import {
@@ -66,17 +60,25 @@ import {
 import {
   fetchLoansFromSupabase,
   createLoan,
+  createTopUpLoan,
   createLoanRepayment,
   updateLoanScheduleStatus,
   approveLoan,
   rejectLoan,
   deleteLoan,
+  CreateTopUpLoanInput,
 } from './services/loanService';
 import {
   fetchCashFlowFromSupabase,
   createCashFlowRecord,
-  deleteCashFlowRecord,
 } from './services/cashFlowService';
+import {
+  extractSpCashMutationsFromCashFlow,
+  fetchSpCashMutationsFromSupabase,
+  createSpCashMutationInSupabase,
+  deleteSpCashMutationFromSupabase,
+  migrateLocalSpCashToSupabase,
+} from './services/spCashService';
 import {
   fetchBusinessUnitsAndTransactionsFromSupabase,
   createBusinessUnitTransaction,
@@ -85,7 +87,6 @@ import {
 import { fetchAuditLogsFromSupabase } from './services/auditLogService';
 import { fetchDashboardDataFromSupabase } from './services/dashboardService';
 import { fetchReportDataFromSupabase } from './services/reportService';
-import { AuditLogView } from './components/AuditLogView';
 
 export default function App() {
   // Authentication State
@@ -93,11 +94,106 @@ export default function App() {
   const [isAuthChecking, setIsAuthChecking] = useState(true);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
 
+  // Navigation States
+  const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
+  const [activeUnitId, setActiveUnitId] = useState<'semua' | BusinessUnitId>('semua');
+  const [activeSavingsSubTab, setActiveSavingsSubTab] = useState<'pokok_wajib' | 'berjangka' | 'mutasi'>('pokok_wajib');
+  const [activeLoanSubTab, setActiveLoanSubTab] = useState<'daftar_pinjaman' | 'kas_unit_sp'>('daftar_pinjaman');
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+
+  // Core Data States (Single Source of Truth = Supabase PostgreSQL)
+  const [members, setMembers] = useState<Member[]>([]);
+  const [isMembersLoading, setIsMembersLoading] = useState(false);
+  const [membersError, setMembersError] = useState<string | null>(null);
+  const [isMembersFromSupabase, setIsMembersFromSupabase] = useState(false);
+
+  const [savings, setSavings] = useState<SavingsTransaction[]>([]);
+  const [isSavingsLoading, setIsSavingsLoading] = useState(false);
+  const [savingsError, setSavingsError] = useState<string | null>(null);
+  const [isSavingsFromSupabase, setIsSavingsFromSupabase] = useState(false);
+
+  const [loans, setLoans] = useState<Loan[]>([]);
+  const [repayments, setRepayments] = useState<LoanRepayment[]>([]);
+  const [isLoansLoading, setIsLoansLoading] = useState(false);
+  const [loansError, setLoansError] = useState<string | null>(null);
+  const [isLoansFromSupabase, setIsLoansFromSupabase] = useState(false);
+
+  const [cashFlow, setCashFlow] = useState<CashFlowRecord[]>([]);
+  const [isCashFlowLoading, setIsCashFlowLoading] = useState(false);
+  const [cashFlowError, setCashFlowError] = useState<string | null>(null);
+  const [isCashFlowFromSupabase, setIsCashFlowFromSupabase] = useState(false);
+
+  const [spCashMutations, setSpCashMutations] = useState<SimpanPinjamCashMutation[]>([]);
+  const [localSpCashQueue, setLocalSpCashQueue] = useState<SimpanPinjamCashMutation[]>(() =>
+    loadSpCashMutations()
+  );
+
+  const [businessTransactions, setBusinessTransactions] = useState<BusinessUnitTransaction[]>([]);
+  const [isBusinessLoading, setIsBusinessLoading] = useState(false);
+  const [businessError, setBusinessError] = useState<string | null>(null);
+  const [isBusinessFromSupabase, setIsBusinessFromSupabase] = useState(false);
+
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [isAuditLogsLoading, setIsAuditLogsLoading] = useState(false);
+  const [auditLogsError, setAuditLogsError] = useState<string | null>(null);
+  const [isAuditLogsFromSupabase, setIsAuditLogsFromSupabase] = useState(false);
+
+  // Dashboard Aggregator State
+  const [isDashboardLoading, setIsDashboardLoading] = useState(false);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
+  const [isDashboardFromSupabase, setIsDashboardFromSupabase] = useState(false);
+
+  // Laporan Aggregator State
+  const [isReportLoading, setIsReportLoading] = useState(false);
+  const [reportError, setReportError] = useState<string | null>(null);
+  const [isReportFromSupabase, setIsReportFromSupabase] = useState(false);
+
+  // Receipt & Modal States
+  const [activeReceipt, setActiveReceipt] = useState<ReceiptData | null>(null);
+  const [isDepositModalOpen, setIsDepositModalOpen] = useState(false);
+  const [isBerjangkaModalOpen, setIsBerjangkaModalOpen] = useState(false);
+  const [isNewLoanModalOpen, setIsNewLoanModalOpen] = useState(false);
+  const [preselectedLoanIdForRepayment, setPreselectedLoanIdForRepayment] = useState<string | null>(null);
+  const [initialSelectedMemberId, setInitialSelectedMemberId] = useState<string | undefined>(undefined);
+
+  const resetAllState = useCallback(() => {
+    setMembers([]);
+    setMembersError(null);
+    setIsMembersFromSupabase(false);
+    setSavings([]);
+    setSavingsError(null);
+    setIsSavingsFromSupabase(false);
+    setLoans([]);
+    setRepayments([]);
+    setLoansError(null);
+    setIsLoansFromSupabase(false);
+    setCashFlow([]);
+    setCashFlowError(null);
+    setIsCashFlowFromSupabase(false);
+    setSpCashMutations([]);
+    setBusinessTransactions([]);
+    setBusinessError(null);
+    setIsBusinessFromSupabase(false);
+    setAuditLogs([]);
+    setAuditLogsError(null);
+    setIsAuditLogsFromSupabase(false);
+    setDashboardError(null);
+    setIsDashboardFromSupabase(false);
+    setReportError(null);
+    setIsReportFromSupabase(false);
+    setActiveReceipt(null);
+    setIsDepositModalOpen(false);
+    setIsBerjangkaModalOpen(false);
+    setIsNewLoanModalOpen(false);
+    setPreselectedLoanIdForRepayment(null);
+    setInitialSelectedMemberId(undefined);
+    clearSensitiveLocalCaches();
+  }, []);
+
   // Subscribe to Supabase Auth session & changes
   useEffect(() => {
     let isMounted = true;
 
-    // 1. Dapatkan sesi aktif saat aplikasi pertama kali dimuat
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (!isMounted) return;
       if (session?.user) {
@@ -107,9 +203,15 @@ export default function App() {
           session.user.email
         );
         if (isMounted) {
-          setCurrentUser(userProfile);
-          if (userProfile?.mustChangePassword) {
-            setIsChangePasswordOpen(true);
+          if (userProfile && userProfile.isActive === false) {
+            await logoutUser();
+            resetAllState();
+            setCurrentUser(null);
+          } else {
+            setCurrentUser(userProfile);
+            if (userProfile?.mustChangePassword) {
+              setIsChangePasswordOpen(true);
+            }
           }
         }
       }
@@ -118,12 +220,12 @@ export default function App() {
       }
     });
 
-    // 2. Dengarkan perubahan sesi autentikasi (Login, Logout, Refresh)
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (!isMounted) return;
       if (event === 'SIGNED_OUT' || !session) {
+        resetAllState();
         setCurrentUser(null);
         setIsChangePasswordOpen(false);
       } else if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
@@ -134,9 +236,15 @@ export default function App() {
             session.user.email
           );
           if (isMounted) {
-            setCurrentUser(userProfile);
-            if (userProfile?.mustChangePassword) {
-              setIsChangePasswordOpen(true);
+            if (userProfile && userProfile.isActive === false) {
+              await logoutUser();
+              resetAllState();
+              setCurrentUser(null);
+            } else {
+              setCurrentUser(userProfile);
+              if (userProfile?.mustChangePassword) {
+                setIsChangePasswordOpen(true);
+              }
             }
           }
         }
@@ -147,273 +255,284 @@ export default function App() {
       isMounted = false;
       subscription.unsubscribe();
     };
-  }, []);
+  }, [resetAllState]);
 
-  // Navigation States
-  const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
-  const [activeUnitId, setActiveUnitId] = useState<'semua' | BusinessUnitId>('semua');
-  const [activeSavingsSubTab, setActiveSavingsSubTab] = useState<'pokok_wajib' | 'berjangka' | 'mutasi'>('pokok_wajib');
-  const [activeLoanSubTab, setActiveLoanSubTab] = useState<'daftar_pinjaman' | 'kas_unit_sp'>('daftar_pinjaman');
-  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-
-  // Core Data States
-  const [members, setMembers] = useState<Member[]>(() => loadMembers());
-  const [isMembersLoading, setIsMembersLoading] = useState(false);
-  const [membersError, setMembersError] = useState<string | null>(null);
-  const [isMembersFromSupabase, setIsMembersFromSupabase] = useState(false);
-
-  const reloadMembers = async () => {
+  const reloadMembers = useCallback(async () => {
     setIsMembersLoading(true);
     setMembersError(null);
     try {
       const res = await fetchMembersFromSupabase();
       setMembers(res.members);
       setIsMembersFromSupabase(res.fromSupabase);
-      if (res.error) {
-        setMembersError(res.error);
-      }
+      if (res.error) setMembersError(res.error);
+      return res.members;
     } catch {
       setMembersError('Terjadi kendala saat menyinkronkan data anggota.');
+      return [];
     } finally {
       setIsMembersLoading(false);
     }
-  };
+  }, []);
 
-  // Muat data dashboard, laporan, anggota, simpanan, pinjaman, buku kas, unit usaha, dan audit log dari Supabase saat sesi pengguna aktif
-  useEffect(() => {
-    if (currentUser) {
-      reloadDashboard();
-      reloadReport();
-      reloadMembers();
-      reloadSavings();
-      reloadLoans();
-      reloadCashFlow();
-      reloadBusinessUnits();
-      reloadAuditLogs();
-    }
-  }, [currentUser]);
-  const [savings, setSavings] = useState<SavingsTransaction[]>(() => loadSavings());
-  const [isSavingsLoading, setIsSavingsLoading] = useState(false);
-  const [savingsError, setSavingsError] = useState<string | null>(null);
-  const [isSavingsFromSupabase, setIsSavingsFromSupabase] = useState(false);
-
-  const reloadSavings = async (membersList?: Member[]) => {
-    setIsSavingsLoading(true);
-    setSavingsError(null);
-    try {
-      const res = await fetchSavingsFromSupabase(membersList || members);
-      setSavings(res.savings);
-      setIsSavingsFromSupabase(res.fromSupabase);
-      if (res.error) {
-        setSavingsError(res.error);
+  const reloadSavings = useCallback(
+    async (membersList?: Member[]) => {
+      setIsSavingsLoading(true);
+      setSavingsError(null);
+      try {
+        const res = await fetchSavingsFromSupabase(membersList || members);
+        setSavings(res.savings);
+        setIsSavingsFromSupabase(res.fromSupabase);
+        if (res.error) setSavingsError(res.error);
+      } catch {
+        setSavingsError('Terjadi kendala saat menyinkronkan data simpanan.');
+      } finally {
+        setIsSavingsLoading(false);
       }
-    } catch {
-      setSavingsError('Terjadi kendala saat menyinkronkan data simpanan.');
-    } finally {
-      setIsSavingsLoading(false);
-    }
-  };
-  const [loans, setLoans] = useState<Loan[]>(() => loadLoans());
-  const [repayments, setRepayments] = useState<LoanRepayment[]>(() => loadRepayments());
-  const [isLoansLoading, setIsLoansLoading] = useState(false);
-  const [loansError, setLoansError] = useState<string | null>(null);
-  const [isLoansFromSupabase, setIsLoansFromSupabase] = useState(false);
+    },
+    [members]
+  );
 
-  const reloadLoans = async (membersList?: Member[]) => {
-    setIsLoansLoading(true);
-    setLoansError(null);
-    try {
-      const res = await fetchLoansFromSupabase(membersList || members);
-      setLoans(res.loans);
-      setRepayments(res.repayments);
-      setIsLoansFromSupabase(res.fromSupabase);
-      if (res.error) {
-        setLoansError(res.error);
+  const reloadLoans = useCallback(
+    async (membersList?: Member[]) => {
+      setIsLoansLoading(true);
+      setLoansError(null);
+      try {
+        const res = await fetchLoansFromSupabase(membersList || members);
+        setLoans(res.loans);
+        setRepayments(res.repayments);
+        setIsLoansFromSupabase(res.fromSupabase);
+        if (res.error) setLoansError(res.error);
+      } catch {
+        setLoansError('Terjadi kendala saat menyinkronkan data pinjaman.');
+      } finally {
+        setIsLoansLoading(false);
       }
-    } catch {
-      setLoansError('Terjadi kendala saat menyinkronkan data pinjaman.');
-    } finally {
-      setIsLoansLoading(false);
-    }
-  };
-  const [cashFlow, setCashFlow] = useState<CashFlowRecord[]>(() => loadCashFlow());
-  const [isCashFlowLoading, setIsCashFlowLoading] = useState(false);
-  const [cashFlowError, setCashFlowError] = useState<string | null>(null);
-  const [isCashFlowFromSupabase, setIsCashFlowFromSupabase] = useState(false);
+    },
+    [members]
+  );
 
-  const reloadCashFlow = async () => {
+  const reloadCashFlow = useCallback(async () => {
     setIsCashFlowLoading(true);
     setCashFlowError(null);
     try {
       const res = await fetchCashFlowFromSupabase();
       setCashFlow(res.cashFlow);
+      setSpCashMutations(extractSpCashMutationsFromCashFlow(res.cashFlow));
       setIsCashFlowFromSupabase(res.fromSupabase);
-      if (res.error) {
-        setCashFlowError(res.error);
-      }
+      if (res.error) setCashFlowError(res.error);
     } catch {
       setCashFlowError('Terjadi kendala saat menyinkronkan buku kas.');
     } finally {
       setIsCashFlowLoading(false);
     }
-  };
-  const [businessTransactions, setBusinessTransactions] = useState<BusinessUnitTransaction[]>(() =>
-    loadBusinessTransactions()
-  );
-  const [isBusinessLoading, setIsBusinessLoading] = useState(false);
-  const [businessError, setBusinessError] = useState<string | null>(null);
-  const [isBusinessFromSupabase, setIsBusinessFromSupabase] = useState(false);
+  }, []);
 
-  const reloadBusinessUnits = async () => {
-    setIsBusinessLoading(true);
-    setBusinessError(null);
-    try {
-      const res = await fetchBusinessUnitsAndTransactionsFromSupabase();
-      setBusinessTransactions(res.transactions);
-      setIsBusinessFromSupabase(res.fromSupabase);
-      if (res.error) {
-        setBusinessError(res.error);
+  const reloadBusinessUnits = useCallback(
+    async (unitFilter?: BusinessUnitId | null) => {
+      const targetUnit =
+        unitFilter !== undefined ? unitFilter : getManagedBusinessUnit(currentUser);
+      setIsBusinessLoading(true);
+      setBusinessError(null);
+      try {
+        const res = await fetchBusinessUnitsAndTransactionsFromSupabase(
+          isSuperAdmin(currentUser) ? null : targetUnit
+        );
+        setBusinessTransactions(res.transactions);
+        setIsBusinessFromSupabase(res.fromSupabase);
+        if (res.error) setBusinessError(res.error);
+      } catch {
+        setBusinessError('Terjadi kendala saat menyinkronkan data unit usaha.');
+      } finally {
+        setIsBusinessLoading(false);
       }
-    } catch {
-      setBusinessError('Terjadi kendala saat menyinkronkan data unit usaha.');
-    } finally {
-      setIsBusinessLoading(false);
-    }
-  };
+    },
+    [currentUser]
+  );
 
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>(() => loadAuditLogs());
-  const [isAuditLogsLoading, setIsAuditLogsLoading] = useState(false);
-  const [auditLogsError, setAuditLogsError] = useState<string | null>(null);
-  const [isAuditLogsFromSupabase, setIsAuditLogsFromSupabase] = useState(false);
-
-  const reloadAuditLogs = async () => {
+  const reloadAuditLogs = useCallback(async () => {
+    if (!isSuperAdmin(currentUser)) return;
     setIsAuditLogsLoading(true);
     setAuditLogsError(null);
     try {
       const res = await fetchAuditLogsFromSupabase();
       setAuditLogs(res.auditLogs);
       setIsAuditLogsFromSupabase(res.fromSupabase);
-      if (res.error) {
-        setAuditLogsError(res.error);
-      }
+      if (res.error) setAuditLogsError(res.error);
     } catch {
       setAuditLogsError('Terjadi kendala saat menyinkronkan rekam jejak audit.');
     } finally {
       setIsAuditLogsLoading(false);
     }
-  };
+  }, [currentUser]);
 
-  // Dashboard Aggregator State
-  const [isDashboardLoading, setIsDashboardLoading] = useState(false);
-  const [dashboardError, setDashboardError] = useState<string | null>(null);
-  const [isDashboardFromSupabase, setIsDashboardFromSupabase] = useState(false);
+  const reloadDashboard = useCallback(
+    async (userOverride?: AuthUser | null) => {
+      const actor = userOverride || currentUser;
+      if (!actor) return;
+      if (isAdminSp(actor) || isBusinessUnitManager(actor)) return;
 
-  const reloadDashboard = async () => {
-    setIsDashboardLoading(true);
-    setDashboardError(null);
-    try {
-      const res = await fetchDashboardDataFromSupabase(
-        currentUser?.role || 'pengurus',
-        currentUser?.memberId || currentUser?.username
-      );
-      if (res.members && res.members.length > 0) {
-        setMembers(res.members);
+      setIsDashboardLoading(true);
+      setDashboardError(null);
+      try {
+        const res = await fetchDashboardDataFromSupabase(
+          actor.role,
+          actor.memberId || actor.username
+        );
+        if (res.members && res.members.length > 0) {
+          setMembers(res.members);
+        }
+        setSavings(res.savings);
+        setLoans(res.loans);
+        setRepayments(res.repayments);
+        setCashFlow(res.cashFlow);
+        setSpCashMutations(extractSpCashMutationsFromCashFlow(res.cashFlow));
+        setBusinessTransactions(res.businessTransactions);
+        setIsDashboardFromSupabase(res.fromSupabase);
+        if (res.error) setDashboardError(res.error);
+      } catch {
+        setDashboardError('Terjadi kendala saat menyinkronkan data dashboard.');
+      } finally {
+        setIsDashboardLoading(false);
       }
-      setSavings(res.savings);
-      setLoans(res.loans);
-      setRepayments(res.repayments);
-      setCashFlow(res.cashFlow);
-      setBusinessTransactions(res.businessTransactions);
-      setIsDashboardFromSupabase(res.fromSupabase);
-      if (res.error) {
-        setDashboardError(res.error);
+    },
+    [currentUser]
+  );
+
+  const reloadReport = useCallback(
+    async (userOverride?: AuthUser | null) => {
+      const actor = userOverride || currentUser;
+      if (!actor || !isSuperAdmin(actor)) return;
+
+      setIsReportLoading(true);
+      setReportError(null);
+      try {
+        const res = await fetchReportDataFromSupabase(
+          actor.role,
+          actor.memberId || actor.username
+        );
+        if (res.members && res.members.length > 0) {
+          setMembers(res.members);
+        }
+        setSavings(res.savings);
+        setLoans(res.loans);
+        setRepayments(res.repayments);
+        setCashFlow(res.cashFlow);
+        setSpCashMutations(extractSpCashMutationsFromCashFlow(res.cashFlow));
+        setBusinessTransactions(res.businessTransactions);
+        setIsReportFromSupabase(res.fromSupabase);
+        if (res.error) setReportError(res.error);
+      } catch {
+        setReportError('Terjadi kendala saat menyinkronkan data laporan.');
+      } finally {
+        setIsReportLoading(false);
       }
-    } catch {
-      setDashboardError('Terjadi kendala saat menyinkronkan data dashboard.');
-    } finally {
-      setIsDashboardLoading(false);
+    },
+    [currentUser]
+  );
+
+  const loadAuthorizedDataForUser = useCallback(
+    async (user: AuthUser) => {
+      if (isSuperAdmin(user)) {
+        const loadedMembers = await reloadMembers();
+        await Promise.all([
+          reloadDashboard(user),
+          reloadReport(user),
+          reloadSavings(loadedMembers),
+          reloadLoans(loadedMembers),
+          reloadCashFlow(),
+          reloadBusinessUnits(null),
+          reloadAuditLogs(),
+        ]);
+        return;
+      }
+
+      if (isAdminSp(user)) {
+        setBusinessTransactions([]);
+        setAuditLogs([]);
+        const loadedMembers = await reloadMembers();
+        await Promise.all([
+          reloadSavings(loadedMembers),
+          reloadLoans(loadedMembers),
+          reloadCashFlow(),
+          fetchSpCashMutationsFromSupabase().then((spRes) => {
+            if (spRes.fromSupabase && spRes.mutations.length > 0) {
+              setSpCashMutations(spRes.mutations);
+            }
+          }),
+        ]);
+        return;
+      }
+
+      if (isBusinessUnitManager(user)) {
+        const managedUnit = getManagedBusinessUnit(user);
+        setMembers([]);
+        setSavings([]);
+        setLoans([]);
+        setRepayments([]);
+        setCashFlow([]);
+        setSpCashMutations([]);
+        setAuditLogs([]);
+        await reloadBusinessUnits(managedUnit);
+        return;
+      }
+
+      // Anggota
+      setBusinessTransactions([]);
+      setAuditLogs([]);
+      const loadedMembers = await reloadMembers();
+      await Promise.all([
+        reloadSavings(loadedMembers),
+        reloadLoans(loadedMembers),
+        reloadDashboard(user),
+      ]);
+    },
+    [
+      reloadAuditLogs,
+      reloadBusinessUnits,
+      reloadCashFlow,
+      reloadDashboard,
+      reloadLoans,
+      reloadMembers,
+      reloadReport,
+      reloadSavings,
+    ]
+  );
+
+  // Guard activeTab & activeUnitId strictly against active role permissions
+  useEffect(() => {
+    if (!currentUser) return;
+    if (!canAccessTab(currentUser, activeTab)) {
+      setActiveTab(getDefaultTabForUser(currentUser));
     }
-  };
-
-  // Laporan Aggregator State
-  const [isReportLoading, setIsReportLoading] = useState(false);
-  const [reportError, setReportError] = useState<string | null>(null);
-  const [isReportFromSupabase, setIsReportFromSupabase] = useState(false);
-
-  const reloadReport = async () => {
-    setIsReportLoading(true);
-    setReportError(null);
-    try {
-      const res = await fetchReportDataFromSupabase(
-        currentUser?.role || 'pengurus',
-        currentUser?.memberId || currentUser?.username
-      );
-      if (res.members && res.members.length > 0) {
-        setMembers(res.members);
+    if (isBusinessUnitManager(currentUser)) {
+      const managed = getManagedBusinessUnit(currentUser);
+      if (managed && activeUnitId !== managed) {
+        setActiveUnitId(managed);
       }
-      setSavings(res.savings);
-      setLoans(res.loans);
-      setRepayments(res.repayments);
-      setCashFlow(res.cashFlow);
-      setBusinessTransactions(res.businessTransactions);
-      setIsReportFromSupabase(res.fromSupabase);
-      if (res.error) {
-        setReportError(res.error);
-      }
-    } catch {
-      setReportError('Terjadi kendala saat menyinkronkan data laporan.');
-    } finally {
-      setIsReportLoading(false);
     }
-  };
-  const [spCashMutations, setSpCashMutations] = useState<SimpanPinjamCashMutation[]>(() => loadSpCashMutations());
+  }, [currentUser, activeTab, activeUnitId]);
 
-  // Receipt Modal State
-  const [activeReceipt, setActiveReceipt] = useState<ReceiptData | null>(null);
-
-  // Trigger states for quick shortcuts across views
-  const [isDepositModalOpen, setIsDepositModalOpen] = useState(false);
-  const [isBerjangkaModalOpen, setIsBerjangkaModalOpen] = useState(false);
-  const [isNewLoanModalOpen, setIsNewLoanModalOpen] = useState(false);
-  const [preselectedLoanIdForRepayment, setPreselectedLoanIdForRepayment] = useState<string | null>(null);
-  const [initialSelectedMemberId, setInitialSelectedMemberId] = useState<string | undefined>(undefined);
-
-  // Role state: derived from active authenticated user (or fallback)
-  const userRole: UserRole = currentUser?.role || 'pengurus';
-
-  // Synchronize to localStorage
+  // Trigger role-aware Supabase load when authenticated user changes
   useEffect(() => {
-    saveMembers(members);
-  }, [members]);
-
-  // Transaksi baru disimpan murni ke Supabase PostgreSQL sebagai single source of truth (tidak ke localStorage)
-
-  useEffect(() => {
-    saveLoans(loans);
-  }, [loans]);
-
-  useEffect(() => {
-    saveRepayments(repayments);
-  }, [repayments]);
-
-  useEffect(() => {
-    saveCashFlow(cashFlow);
-  }, [cashFlow]);
-
-  useEffect(() => {
-    saveBusinessTransactions(businessTransactions);
-  }, [businessTransactions]);
-
-  useEffect(() => {
-    if (auditLogs && auditLogs.length > 0) {
-      saveAuditLogs(auditLogs);
+    if (currentUser) {
+      loadAuthorizedDataForUser(currentUser);
     }
-  }, [auditLogs]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id, currentUser?.role, currentUser?.managedUnit]);
+
+  // Role state derived from active authenticated user
+  const userRole: UserRole = currentUser?.role || 'anggota';
 
   // Auth Handlers
   const handleLoginSuccess = (user: AuthUser) => {
     setCurrentUser(user);
-    setActiveTab('dashboard');
+    setActiveTab(getDefaultTabForUser(user));
+    const managed = getManagedBusinessUnit(user);
+    if (managed && !isSuperAdmin(user)) {
+      setActiveUnitId(managed);
+    } else {
+      setActiveUnitId('semua');
+    }
     if (user.mustChangePassword) {
       setIsChangePasswordOpen(true);
     }
@@ -421,6 +540,7 @@ export default function App() {
 
   const handleLogout = async () => {
     await logoutUser();
+    resetAllState();
     setCurrentUser(null);
     setIsChangePasswordOpen(false);
   };
@@ -441,7 +561,17 @@ export default function App() {
     businessTransactions,
     spCashMutations
   );
-  const pendingLoansCount = loans.filter((l) => l.status === 'menunggu').length;
+  const pendingLoansCount = loans.filter(
+    (l) => l.status === 'menunggu' || l.status === 'diajukan' || l.status === 'review'
+  ).length;
+
+  const refreshFinancialAggregates = async () => {
+    const tasks: Promise<any>[] = [reloadCashFlow()];
+    if (isSuperAdmin(currentUser)) {
+      tasks.push(reloadDashboard(), reloadReport(), reloadAuditLogs());
+    }
+    await Promise.all(tasks);
+  };
 
   const handleAddBusinessTransaction = async (
     txData: Omit<BusinessUnitTransaction, 'id'>
@@ -473,11 +603,10 @@ export default function App() {
       return result;
     }
 
-    // Refresh data Unit Usaha, Dashboard, Laporan, dan Audit Log langsung dari Supabase sebagai Single Source of Truth
     await reloadBusinessUnits();
-    await reloadDashboard();
-    await reloadReport();
-    await reloadAuditLogs();
+    if (isSuperAdmin(currentUser)) {
+      await Promise.all([reloadDashboard(), reloadReport(), reloadAuditLogs()]);
+    }
 
     return result;
   };
@@ -492,12 +621,12 @@ export default function App() {
       return;
     }
     await reloadBusinessUnits();
-    await reloadDashboard();
-    await reloadReport();
-    await reloadAuditLogs();
+    if (isSuperAdmin(currentUser)) {
+      await Promise.all([reloadDashboard(), reloadReport(), reloadAuditLogs()]);
+    }
   };
 
-  // Member Handlers: Terhubung langsung ke Supabase PostgreSQL sebagai Single Source of Truth
+  // Member Handlers
   const handleAddMember = async (newMemberData: Omit<Member, 'id'>, initialPokok: number) => {
     const newId = getNextMemberId(members);
     const newMember: Member = {
@@ -511,7 +640,6 @@ export default function App() {
       return;
     }
 
-    // Jika ada setoran awal simpanan pokok, simpan resmi ke Supabase
     if (initialPokok > 0) {
       const now = new Date();
       const dateStr = now.toISOString().slice(0, 10);
@@ -524,19 +652,16 @@ export default function App() {
           amount: initialPokok,
           date: dateStr,
           notes: 'Setoran Simpanan Pokok awal pendaftaran anggota',
-          adminName: currentUser?.name || 'Pengurus BJS',
+          adminName: currentUser?.name || 'Super Admin BJS',
         },
         currentUser,
         [...members, newMember]
       );
       await reloadSavings();
-      await reloadCashFlow();
     }
 
     await reloadMembers();
-    await reloadDashboard();
-    await reloadReport();
-    await reloadAuditLogs();
+    await refreshFinancialAggregates();
   };
 
   const handleEditMember = async (updatedMember: Member) => {
@@ -546,32 +671,26 @@ export default function App() {
       return;
     }
     await reloadMembers();
-    await reloadDashboard();
-    await reloadReport();
-    await reloadAuditLogs();
+    if (isSuperAdmin(currentUser)) {
+      await Promise.all([reloadDashboard(), reloadReport(), reloadAuditLogs()]);
+    }
   };
 
-  const handleDeleteMember = (memberId: string) => {
-    // Tidak mengizinkan hard delete anggota di produksi untuk menjaga integritas historis 217 anggota
-    alert('Penghapusan anggota dinonaktifkan demi integritas data historis. Silakan ubah status anggota menjadi "Keluar" jika anggota mengundurkan diri.');
+  const handleDeleteMember = () => {
+    alert(
+      'Penghapusan anggota dinonaktifkan demi integritas data historis. Silakan ubah status anggota menjadi "Keluar" jika anggota mengundurkan diri.'
+    );
   };
 
-  // Savings Handlers: Terhubung langsung ke Supabase PostgreSQL
+  // Savings Handlers
   const handleAddSavings = async (
     txData: Omit<SavingsTransaction, 'id'>
   ): Promise<{ success: boolean; message: string; data?: SavingsTransaction; error?: string }> => {
     const result = await createSavingsTransaction(txData, currentUser, members);
+    if (!result.success) return result;
 
-    if (!result.success) {
-      return result;
-    }
-
-    // Refresh data simpanan langsung dari Supabase sebagai single source of truth
     await reloadSavings();
-    await reloadCashFlow();
-    await reloadDashboard();
-    await reloadReport();
-
+    await refreshFinancialAggregates();
     return result;
   };
 
@@ -579,17 +698,10 @@ export default function App() {
     transactions: Omit<SavingsTransaction, 'id'>[]
   ): Promise<{ success: boolean; message: string; data?: SavingsTransaction[]; error?: string }> => {
     const result = await createBatchSavingsTransactions(transactions, currentUser, members);
+    if (!result.success) return result;
 
-    if (!result.success) {
-      return result;
-    }
-
-    // Refresh data simpanan langsung dari Supabase sebagai single source of truth
     await reloadSavings();
-    await reloadCashFlow();
-    await reloadDashboard();
-    await reloadReport();
-
+    await refreshFinancialAggregates();
     return result;
   };
 
@@ -601,10 +713,7 @@ export default function App() {
     }
 
     await reloadSavings();
-    await reloadCashFlow();
-    await reloadDashboard();
-    await reloadReport();
-    await reloadAuditLogs();
+    await refreshFinancialAggregates();
   };
 
   const handleDeleteSavings = async (savingsId: string) => {
@@ -615,19 +724,17 @@ export default function App() {
     }
 
     await reloadSavings();
-    await reloadDashboard();
-    await reloadReport();
-    await reloadAuditLogs();
+    await refreshFinancialAggregates();
   };
 
-  // Loan Handlers: Terhubung langsung ke Supabase PostgreSQL sebagai Single Source of Truth
+  // Loan & Top Up Handlers
   const handleUpdateSchedulePayment = async (
     loanId: string,
     month: number,
     isPaid: boolean,
     paidDate?: string
   ) => {
-    await updateLoanScheduleStatus(
+    const res = await updateLoanScheduleStatus(
       {
         loanId,
         installmentNo: month,
@@ -636,11 +743,15 @@ export default function App() {
       },
       currentUser
     );
+    if (!res.success) {
+      alert(res.message);
+      return;
+    }
 
-    // Refresh data pinjaman, dashboard, dan laporan langsung dari Supabase
     await reloadLoans();
-    await reloadDashboard();
-    await reloadReport();
+    if (isSuperAdmin(currentUser)) {
+      await Promise.all([reloadDashboard(), reloadReport()]);
+    }
   };
 
   const handleAddLoan = async (
@@ -669,17 +780,22 @@ export default function App() {
     );
 
     if (!result.success) {
-      alert(`Gagal mencatat pinjaman: ${result.message}`);
       return result;
     }
 
-    // Refresh data pinjaman, buku kas, dashboard, laporan, dan audit log langsung dari Supabase
     await reloadLoans();
-    await reloadCashFlow();
-    await reloadDashboard();
-    await reloadReport();
-    await reloadAuditLogs();
+    await refreshFinancialAggregates();
+    return result;
+  };
 
+  const handleCreateTopUpLoan = async (input: CreateTopUpLoanInput, parentLoan?: Loan) => {
+    const result = await createTopUpLoan(input, currentUser, members, parentLoan);
+    if (!result.success) {
+      return result;
+    }
+
+    await reloadLoans();
+    await refreshFinancialAggregates();
     return result;
   };
 
@@ -691,10 +807,7 @@ export default function App() {
     }
 
     await reloadLoans();
-    await reloadCashFlow();
-    await reloadDashboard();
-    await reloadReport();
-    await reloadAuditLogs();
+    await refreshFinancialAggregates();
   };
 
   const handleRejectLoan = async (loanId: string) => {
@@ -705,9 +818,9 @@ export default function App() {
     }
 
     await reloadLoans();
-    await reloadDashboard();
-    await reloadReport();
-    await reloadAuditLogs();
+    if (isSuperAdmin(currentUser)) {
+      await Promise.all([reloadDashboard(), reloadReport(), reloadAuditLogs()]);
+    }
   };
 
   const handleDeleteLoan = async (loanId: string) => {
@@ -718,10 +831,7 @@ export default function App() {
     }
 
     await reloadLoans();
-    await reloadCashFlow();
-    await reloadDashboard();
-    await reloadReport();
-    await reloadAuditLogs();
+    await refreshFinancialAggregates();
   };
 
   const handlePayInstallment = async ({
@@ -755,13 +865,8 @@ export default function App() {
       return result;
     }
 
-    // Refresh data pinjaman, kas, dashboard, laporan, dan audit log langsung dari Supabase
     await reloadLoans();
-    await reloadCashFlow();
-    await reloadDashboard();
-    await reloadReport();
-    await reloadAuditLogs();
-
+    await refreshFinancialAggregates();
     return result;
   };
 
@@ -786,72 +891,48 @@ export default function App() {
       return result;
     }
 
-    // Refresh data mutasi kas, dashboard, laporan, dan audit log langsung dari Supabase
-    await reloadCashFlow();
-    await reloadDashboard();
-    await reloadReport();
-    await reloadAuditLogs();
-
+    await refreshFinancialAggregates();
     return result;
   };
 
-  const handleAddSpCashMutation = (mutationData: Omit<SimpanPinjamCashMutation, 'id' | 'createdAt'>) => {
-    const id = `KAS-SP-${Date.now().toString().slice(-6)}`;
-    const newMutation: SimpanPinjamCashMutation = {
-      ...mutationData,
-      id,
-      createdAt: new Date().toISOString(),
-    };
-
-    const updated = [newMutation, ...spCashMutations];
-    setSpCashMutations(updated);
-    saveSpCashMutations(updated);
-
-    // Sync into cashflow
-    const newRecord: CashFlowRecord = {
-      id: `CSH-SP-${Date.now().toString().slice(-6)}`,
-      date: newMutation.date,
-      type: newMutation.type === 'penambahan' ? 'masuk' : 'keluar',
-      category: newMutation.type === 'penambahan' ? 'simpanan' : 'operasional_sp',
-      amount: newMutation.amount,
-      referenceId: id,
-      description: `[KAS UNIT SP] ${newMutation.category}: ${newMutation.description}`,
-      targetAccount: 'kas_operasional_sp',
-    };
-    const updatedCashFlow = [newRecord, ...cashFlow];
-    setCashFlow(updatedCashFlow);
-    saveCashFlow(updatedCashFlow);
+  // Kas Unit Simpan Pinjam Handlers (PostgreSQL Single Source of Truth)
+  const handleAddSpCashMutation = async (
+    mutationData: Omit<SimpanPinjamCashMutation, 'id' | 'createdAt'>
+  ) => {
+    const result = await createSpCashMutationInSupabase(mutationData, currentUser);
+    if (!result.success) {
+      alert(`Gagal mencatat mutasi Kas Unit SP: ${result.message}`);
+      return;
+    }
+    await refreshFinancialAggregates();
   };
 
-  const handleDeleteSpCashMutation = (id: string) => {
-    const updated = spCashMutations.filter((m) => m.id !== id);
-    setSpCashMutations(updated);
-    saveSpCashMutations(updated);
+  const handleDeleteSpCashMutation = async (id: string) => {
+    const result = await deleteSpCashMutationFromSupabase(id, currentUser);
+    if (!result.success) {
+      alert(`Gagal menghapus mutasi Kas Unit SP: ${result.message}`);
+      return;
+    }
+    await refreshFinancialAggregates();
+  };
 
-    const updatedCashFlow = cashFlow.filter((cf) => cf.referenceId !== id);
-    setCashFlow(updatedCashFlow);
-    saveCashFlow(updatedCashFlow);
+  const handleMigrateLocalSpCash = async () => {
+    const result = await migrateLocalSpCashToSupabase(localSpCashQueue, currentUser);
+    alert(result.message);
+    if (result.success) {
+      setLocalSpCashQueue([]);
+      await refreshFinancialAggregates();
+    }
   };
 
   const handleResetData = () => {
-    resetToDemoData();
-    setMembers(loadMembers());
-    setSavings(loadSavings());
-    setLoans(loadLoans());
-    setRepayments(loadRepayments());
-    setCashFlow(loadCashFlow());
-    setBusinessTransactions(loadBusinessTransactions());
-    setSpCashMutations(loadSpCashMutations());
+    if (currentUser) {
+      loadAuthorizedDataForUser(currentUser);
+    }
   };
 
-  const handleImportData = (importedData: any) => {
-    if (importedData.members) setMembers(importedData.members);
-    if (importedData.savings) setSavings(importedData.savings);
-    if (importedData.loans) setLoans(importedData.loans);
-    if (importedData.repayments) setRepayments(importedData.repayments);
-    if (importedData.cashFlow) setCashFlow(importedData.cashFlow);
-    if (importedData.businessTransactions) setBusinessTransactions(importedData.businessTransactions);
-    if (importedData.spCashMutations) setSpCashMutations(importedData.spCashMutations);
+  const handleImportData = () => {
+    alert('Impor lokal dinonaktifkan. Seluruh data tersinkronisasi langsung dari database PostgreSQL Supabase.');
   };
 
   // Loading screen saat memeriksa sesi Supabase Auth awal
@@ -907,7 +988,7 @@ export default function App() {
         />
 
         <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          {activeTab === 'dashboard' && (
+          {activeTab === 'dashboard' && canAccessTab(currentUser, 'dashboard') && (
             <DashboardView
               summary={summary}
               members={members}
@@ -950,11 +1031,11 @@ export default function App() {
               isLoading={isDashboardLoading}
               error={dashboardError}
               isFromSupabase={isDashboardFromSupabase || isMembersFromSupabase || isSavingsFromSupabase}
-              onRefresh={reloadDashboard}
+              onRefresh={() => reloadDashboard()}
             />
           )}
 
-          {activeTab === 'anggota' && (
+          {activeTab === 'anggota' && canAccessTab(currentUser, 'anggota') && (
             <AnggotaView
               members={members}
               savings={savings}
@@ -982,7 +1063,7 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'simpanan' && (
+          {activeTab === 'simpanan' && canAccessTab(currentUser, 'simpanan') && (
             <SimpananView
               members={members}
               savings={savings}
@@ -1003,16 +1084,17 @@ export default function App() {
               isLoading={isSavingsLoading}
               error={savingsError}
               isFromSupabase={isSavingsFromSupabase}
-              onRefresh={reloadSavings}
+              onRefresh={() => reloadSavings()}
             />
           )}
 
-          {activeTab === 'pinjaman' && (
+          {activeTab === 'pinjaman' && canAccessTab(currentUser, 'pinjaman') && (
             <PinjamanView
               members={members}
               loans={loans}
               repayments={repayments}
               onAddLoan={handleAddLoan}
+              onCreateTopUpLoan={handleCreateTopUpLoan}
               onApproveLoan={handleApproveLoan}
               onRejectLoan={handleRejectLoan}
               onPayInstallment={handlePayInstallment}
@@ -1028,16 +1110,34 @@ export default function App() {
               spCashMutations={spCashMutations}
               onAddSpCashMutation={handleAddSpCashMutation}
               onDeleteSpCashMutation={handleDeleteSpCashMutation}
+              onMigrateLocalSpCash={handleMigrateLocalSpCash}
+              hasLocalUnsyncedSpCash={localSpCashQueue.length > 0}
               activeSubTab={activeLoanSubTab}
               setActiveSubTab={setActiveLoanSubTab}
               isLoading={isLoansLoading}
               error={loansError}
               isFromSupabase={isLoansFromSupabase}
-              onRefresh={reloadLoans}
+              onRefresh={() => reloadLoans()}
             />
           )}
 
-          {activeTab === 'unit_usaha' && (
+          {activeTab === 'laporan_usp' && canAccessTab(currentUser, 'laporan_usp') && (
+            <LaporanUspView
+              members={members}
+              savings={savings}
+              loans={loans}
+              repayments={repayments}
+              cashFlow={cashFlow}
+              spCashMutations={spCashMutations}
+              currentUser={currentUser}
+              isLoading={isLoansLoading || isSavingsLoading || isCashFlowLoading}
+              error={loansError || savingsError || cashFlowError}
+              isFromSupabase={isLoansFromSupabase || isSavingsFromSupabase || isCashFlowFromSupabase}
+              onRefresh={() => loadAuthorizedDataForUser(currentUser)}
+            />
+          )}
+
+          {activeTab === 'unit_usaha' && canAccessTab(currentUser, 'unit_usaha') && (
             <LaporanUnitUsahaView
               businessTransactions={businessTransactions}
               unitReports={buCalc.reports}
@@ -1051,11 +1151,11 @@ export default function App() {
               isLoading={isBusinessLoading}
               error={businessError}
               isFromSupabase={isBusinessFromSupabase}
-              onRefresh={reloadBusinessUnits}
+              onRefresh={() => reloadBusinessUnits()}
             />
           )}
 
-          {activeTab === 'shu' && (
+          {activeTab === 'shu' && canAccessTab(currentUser, 'shu') && (
             <ShuView
               members={members}
               savings={savings}
@@ -1070,7 +1170,7 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'simulasi' && (
+          {activeTab === 'simulasi' && canAccessTab(currentUser, 'simulasi') && (
             <SimulasiView
               members={members}
               savings={savings}
@@ -1083,7 +1183,7 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'laporan' && (
+          {activeTab === 'laporan' && canAccessTab(currentUser, 'laporan') && (
             <LaporanView
               summary={summary}
               members={members}
@@ -1097,13 +1197,13 @@ export default function App() {
               isLoading={isReportLoading || isCashFlowLoading}
               error={reportError || cashFlowError}
               isFromSupabase={isReportFromSupabase || isCashFlowFromSupabase}
-              onRefresh={reloadReport}
+              onRefresh={() => reloadReport()}
               userRole={userRole}
               currentUser={currentUser}
             />
           )}
 
-          {activeTab === 'audit_log' && (
+          {activeTab === 'audit_log' && canAccessTab(currentUser, 'audit_log') && (
             <AuditLogView
               auditLogs={auditLogs}
               isLoading={isAuditLogsLoading}
@@ -1112,6 +1212,10 @@ export default function App() {
               onRefresh={reloadAuditLogs}
               userRole={userRole}
             />
+          )}
+
+          {activeTab === 'manajemen_user' && canAccessTab(currentUser, 'manajemen_user') && (
+            <UserManagementView currentUser={currentUser} members={members} />
           )}
         </main>
 

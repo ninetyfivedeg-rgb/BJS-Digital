@@ -15,7 +15,15 @@ export interface Member {
   notes?: string;
 }
 
-export type UserRole = 'pengurus' | 'anggota';
+export type UserRole =
+  | 'pengurus'
+  | 'super_admin'
+  | 'admin_sp'
+  | 'pengurus_apar'
+  | 'pengurus_isi_ulang_apar'
+  | 'pengurus_sembako'
+  | 'pengurus_atribut'
+  | 'anggota';
 
 export const KOPERASI_OFFICIALS = {
   ketua: 'Durita, SH., MM.',
@@ -92,8 +100,23 @@ export interface AuthUser {
   role: UserRole;
   memberId?: string;
   unitKerja?: string;
+  managedUnit?: BusinessUnitId | null;
+  isActive?: boolean;
   mustChangePassword?: boolean;
   email?: string;
+}
+
+export interface UserProfileRecord {
+  id: string;
+  role: UserRole;
+  memberId?: string | null;
+  name: string;
+  unitKerja?: string | null;
+  managedUnit?: BusinessUnitId | null;
+  isActive: boolean;
+  mustChangePassword: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export type SavingsType = 'pokok' | 'wajib' | 'berjangka';
@@ -140,7 +163,7 @@ export interface Loan {
   memberName: string;
   amount: number; // Plafon pinjaman
   tenorMonths: number; // Lama cicilan (bulan)
-  interestRatePerMonth: number; // 1.1% or 1.2% flat
+  interestRatePerMonth: number; // 1.1% flat
   adminFee: number; // Biaya administrasi 1% (masuk ke Kas Operasional Unit Simpan Pinjam)
   monthlyPrincipal: number; // amount / tenor
   monthlyInterest: number; // amount * (interestRate / 100)
@@ -153,6 +176,14 @@ export interface Loan {
   disbursedDate?: string;
   schedules: LoanScheduleItem[];
   notes?: string;
+  // Metadata Top Up Pinjaman (dari kolom PostgreSQL loans)
+  isTopUp?: boolean;
+  parentLoanId?: string;
+  toppedUpByLoanId?: string;
+  topUpSettledPrincipal?: number;
+  topUpSettledInterest?: number;
+  netDisbursedAmount?: number;
+  settlementType?: 'normal' | 'topup';
 }
 
 export interface LoanRepayment {

@@ -1,23 +1,9 @@
 import { supabase } from '../lib/supabase';
 import { AuditLog } from '../types';
-import { loadAuditLogs as loadLocalFallbackAuditLogs } from '../utils/storage';
 
 /**
  * Memetakan baris dari tabel `audit_logs` Supabase (snake_case)
  * ke interface `AuditLog` aplikasi (camelCase).
- *
- * Kolom tabel Supabase `audit_logs`:
- * - id: string
- * - user_id: string
- * - actor_name: string
- * - actor_role: string
- * - action: string
- * - entity_type: string
- * - entity_id: string
- * - description: string
- * - old_data: any (JSON)
- * - new_data: any (JSON)
- * - created_at: string (timestamp)
  */
 export function mapSupabaseAuditLogToAuditLog(row: any): AuditLog {
   return {
@@ -44,14 +30,6 @@ export interface FetchAuditLogsResponse {
 
 /**
  * Mengambil data rekam jejak audit sistem dari tabel Supabase `audit_logs`.
- *
- * PENTING:
- * - Operasi ini HANYA pembacaan data (READ ONLY).
- * - Tidak ada penambahan/pencatatan audit log baru pada tahap ini.
- *
- * Catatan Fallback:
- * Jika terjadi kegagalan jaringan atau query Supabase, data lokal/dummy
- * dari `loadAuditLogs()` digunakan sebagai cadangan sementara (fallback).
  */
 export async function fetchAuditLogsFromSupabase(): Promise<FetchAuditLogsResponse> {
   try {
@@ -62,40 +40,28 @@ export async function fetchAuditLogsFromSupabase(): Promise<FetchAuditLogsRespon
 
     if (error) {
       console.warn('Gagal memuat rekam jejak audit dari Supabase:', error.message);
-      const fallback = loadLocalFallbackAuditLogs();
       return {
-        auditLogs: fallback,
-        error: 'Gagal mengambil rekam jejak audit dari server. Menampilkan data cadangan lokal.',
+        auditLogs: [],
+        error: `Gagal mengambil rekam jejak audit dari server: ${error.message}`,
         fromSupabase: false,
-        totalCount: fallback.length,
+        totalCount: 0,
       };
     }
 
-    if (data && Array.isArray(data)) {
-      const mapped = data.map(mapSupabaseAuditLogToAuditLog);
-      return {
-        auditLogs: mapped,
-        error: null,
-        fromSupabase: true,
-        totalCount: mapped.length,
-      };
-    }
-
-    const fallback = loadLocalFallbackAuditLogs();
+    const mapped = (data || []).map(mapSupabaseAuditLogToAuditLog);
     return {
-      auditLogs: fallback,
+      auditLogs: mapped,
       error: null,
-      fromSupabase: false,
-      totalCount: fallback.length,
+      fromSupabase: true,
+      totalCount: mapped.length,
     };
   } catch (err: any) {
     console.error('Terjadi pengecualian saat memuat audit log dari Supabase:', err);
-    const fallback = loadLocalFallbackAuditLogs();
     return {
-      auditLogs: fallback,
-      error: 'Terjadi kendala jaringan saat memuat audit log. Menampilkan data cadangan lokal.',
+      auditLogs: [],
+      error: 'Terjadi kendala jaringan saat memuat audit log.',
       fromSupabase: false,
-      totalCount: fallback.length,
+      totalCount: 0,
     };
   }
 }

@@ -1,24 +1,11 @@
 import { supabase } from '../lib/supabase';
 import { Member, MemberStatus, AuthUser } from '../types';
-import { loadMembers as loadLocalFallbackMembers, saveMembers, sanitizeUuid } from '../utils/storage';
+import { sanitizeUuid } from '../utils/storage';
+import { isSuperAdmin } from '../utils/permissions';
 
 /**
  * Memetakan baris dari tabel `members` Supabase (snake_case)
  * secara presisi ke interface `Member` aplikasi (camelCase).
- *
- * Kolom tabel Supabase `members`:
- * - id: string ("BJS-001")
- * - nik: string
- * - name: string
- * - phone: string
- * - address: string
- * - join_date: string (YYYY-MM-DD)
- * - join_year: number | string
- * - calculated_months: number
- * - initial_total_savings: number
- * - job: string
- * - status: string ('aktif' | 'pasif' | 'keluar' | 'nonaktif')
- * - notes: string
  */
 export function mapSupabaseMemberToMember(row: any): Member {
   return {
@@ -45,12 +32,7 @@ export interface FetchMembersResponse {
 }
 
 /**
- * Mengambil data anggota langsung dari tabel Supabase `members`.
- *
- * Catatan Fallback:
- * Jika terjadi kegagalan jaringan atau query Supabase, data lokal/dummy
- * dari `loadMembers()` digunakan sebagai cadangan sementara (fallback)
- * agar aplikasi tetap dapat beroperasi tanpa kehilangan integritas.
+ * Mengambil data anggota langsung dari tabel Supabase `members` tanpa fallback lokal.
  */
 export async function fetchMembersFromSupabase(): Promise<FetchMembersResponse> {
   try {
@@ -61,60 +43,43 @@ export async function fetchMembersFromSupabase(): Promise<FetchMembersResponse> 
 
     if (error) {
       console.warn('Gagal memuat data anggota dari Supabase:', error.message);
-      // Fallback sementara ke data lokal
-      const fallbackList = loadLocalFallbackMembers();
       return {
-        members: fallbackList,
-        error: 'Gagal mengambil data anggota dari server. Menampilkan data cadangan lokal.',
+        members: [],
+        error: `Gagal mengambil data anggota dari server: ${error.message}`,
         fromSupabase: false,
-        totalCount: fallbackList.length,
+        totalCount: 0,
       };
     }
 
-    if (data && Array.isArray(data) && data.length > 0) {
-      const mapped = data.map(mapSupabaseMemberToMember);
-      saveMembers(mapped);
-      return {
-        members: mapped,
-        error: null,
-        fromSupabase: true,
-        totalCount: mapped.length,
-      };
-    }
-
-    // Jika data kosong (misal RLS mengembalikan 0 row untuk sesi saat ini), gunakan fallback
-    const fallbackList = loadLocalFallbackMembers();
+    const mapped = (data || []).map(mapSupabaseMemberToMember);
     return {
-      members: fallbackList,
+      members: mapped,
       error: null,
-      fromSupabase: false,
-      totalCount: fallbackList.length,
+      fromSupabase: true,
+      totalCount: mapped.length,
     };
   } catch (err: any) {
     console.error('Terjadi pengecualian saat mengambil data anggota dari Supabase:', err);
-    // Fallback sementara jika terjadi kendala jaringan/runtime
-    const fallbackList = loadLocalFallbackMembers();
     return {
-      members: fallbackList,
-      error: 'Terjadi kendala saat menghubungi server. Menampilkan data cadangan lokal.',
+      members: [],
+      error: 'Terjadi kendala jaringan saat mengambil data anggota dari server.',
       fromSupabase: false,
-      totalCount: fallbackList.length,
+      totalCount: 0,
     };
   }
 }
 
 /**
- * Memperbarui data anggota di tabel Supabase `members`.
- * Menjamin perubahan nama, status, unit kerja, dll. tersimpan persistent antar-device.
+ * Memperbarui data anggota di tabel Supabase `members` (hanya Super Admin).
  */
 export async function updateMemberInSupabase(
   updatedMember: Member,
   currentUser?: AuthUser | null
 ): Promise<{ success: boolean; message: string; data?: Member; error?: string }> {
-  if (!currentUser || currentUser.role !== 'pengurus') {
+  if (!isSuperAdmin(currentUser)) {
     return {
       success: false,
-      message: 'Akses ditolak: Hanya Pengurus yang dapat memperbarui data anggota.',
+      message: 'Akses ditolak: Hanya Super Admin yang berwenang memperbarui data anggota.',
       error: 'UNAUTHORIZED_ROLE',
     };
   }
@@ -146,21 +111,22 @@ export async function updateMemberInSupabase(
       };
     }
 
-    // Catat ke audit_logs
     try {
-      const validUserUuid = sanitizeUuid(currentUser.id);
-      const auditPayload = {
-        user_id: validUserUuid || undefined,
-        actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
-        actor_role: currentUser.role || 'pengurus',
-        action: 'UPDATE_MEMBER',
-        entity_type: 'members',
-        entity_id: updatedMember.id,
-        description: `Memperbarui data anggota ${updatedMember.id} (${updatedMember.name}) - Status: ${updatedMember.status}`,
-        new_data: updatePayload,
-        created_at: new Date().toISOString(),
-      };
-      await supabase.from('audit_logs').insert([auditPayload]);
+      const validUserUuid = sanitizeUuid(currentUser?.id);
+      if (validUserUuid) {
+        const auditPayload = {
+          user_id: validUserUuid,
+          actor_name: currentUser?.name || currentUser?.username || 'Super Admin',
+          actor_role: currentUser?.role || 'super_admin',
+          action: 'UPDATE_MEMBER',
+          entity_type: 'members',
+          entity_id: updatedMember.id,
+          description: `Memperbarui data anggota ${updatedMember.id} (${updatedMember.name}) - Status: ${updatedMember.status}`,
+          new_data: updatePayload,
+          created_at: new Date().toISOString(),
+        };
+        await supabase.from('audit_logs').insert([auditPayload]);
+      }
     } catch {}
 
     return {
@@ -178,16 +144,16 @@ export async function updateMemberInSupabase(
 }
 
 /**
- * Menambahkan data anggota baru ke tabel Supabase `members`.
+ * Menambahkan data anggota baru ke tabel Supabase `members` (hanya Super Admin).
  */
 export async function createMemberInSupabase(
   newMember: Member,
   currentUser?: AuthUser | null
 ): Promise<{ success: boolean; message: string; data?: Member; error?: string }> {
-  if (!currentUser || currentUser.role !== 'pengurus') {
+  if (!isSuperAdmin(currentUser)) {
     return {
       success: false,
-      message: 'Akses ditolak: Hanya Pengurus yang dapat mendaftarkan anggota baru.',
+      message: 'Akses ditolak: Hanya Super Admin yang berwenang mendaftarkan anggota baru.',
       error: 'UNAUTHORIZED_ROLE',
     };
   }
@@ -223,19 +189,21 @@ export async function createMemberInSupabase(
     }
 
     try {
-      const validUserUuid = sanitizeUuid(currentUser.id);
-      const auditPayload = {
-        user_id: validUserUuid || undefined,
-        actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
-        actor_role: currentUser.role || 'pengurus',
-        action: 'CREATE_MEMBER',
-        entity_type: 'members',
-        entity_id: newMember.id,
-        description: `Mendaftarkan anggota baru ${newMember.id} (${newMember.name})`,
-        new_data: insertPayload,
-        created_at: new Date().toISOString(),
-      };
-      await supabase.from('audit_logs').insert([auditPayload]);
+      const validUserUuid = sanitizeUuid(currentUser?.id);
+      if (validUserUuid) {
+        const auditPayload = {
+          user_id: validUserUuid,
+          actor_name: currentUser?.name || currentUser?.username || 'Super Admin',
+          actor_role: currentUser?.role || 'super_admin',
+          action: 'CREATE_MEMBER',
+          entity_type: 'members',
+          entity_id: newMember.id,
+          description: `Mendaftarkan anggota baru ${newMember.id} (${newMember.name})`,
+          new_data: insertPayload,
+          created_at: new Date().toISOString(),
+        };
+        await supabase.from('audit_logs').insert([auditPayload]);
+      }
     } catch {}
 
     return {

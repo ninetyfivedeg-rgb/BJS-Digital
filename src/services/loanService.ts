@@ -1,11 +1,98 @@
 import { supabase } from '../lib/supabase';
 import { Loan, LoanRepayment, LoanStatus, LoanScheduleItem, Member, AuthUser } from '../types';
-import {
-  loadLoans as loadLocalFallbackLoans,
-  loadRepayments as loadLocalFallbackRepayments,
-  sanitizeUuid,
-} from '../utils/storage';
+import { calculateLoanRemaining, sanitizeUuid } from '../utils/storage';
+import { isSimpanPinjamOfficer, isSuperAdmin } from '../utils/permissions';
 import { formatRupiah } from '../utils/formatters';
+
+export interface TopUpPreview {
+  parentLoanId: string;
+  oldPlafon: number;
+  remainingPrincipal: number;
+  overdueInterest: number;
+  overdueInstallmentCount: number;
+  futureWaivedInterest: number;
+  newAmount: number;
+  adminFee: number;
+  netBeforeAdmin: number;
+  netToMember: number;
+  isValidNetPositive: boolean;
+}
+
+export interface CreateTopUpLoanInput {
+  parentLoanId: string;
+  memberId: string;
+  memberName?: string;
+  newAmount: number;
+  tenorMonths: number;
+  startDate: string;
+  purpose?: string;
+  notes?: string;
+}
+
+export interface CreateTopUpLoanActionResult {
+  success: boolean;
+  message: string;
+  data?: Loan;
+  preview?: TopUpPreview;
+  rpcResult?: {
+    newLoanId: string;
+    parentLoanId: string;
+    settledPrincipal: number;
+    settledInterest: number;
+    adminFee: number;
+    netDisbursedToMember: number;
+    netCashOutflow: number;
+  };
+  error?: string;
+}
+
+/**
+ * Menghitung preview pelunasan & pencairan bersih Top Up Pinjaman (1% admin penuh,
+ * sisa pokok lama + tunggakan bunga jatuh tempo <= tanggal top up, bunga masa depan dihapuskan).
+ */
+export function calculateTopUpPreview(
+  oldLoan: Loan,
+  newAmount: number,
+  topUpDate: string
+): TopUpPreview {
+  const safeNewAmount = Math.max(0, Number(newAmount) || 0);
+  const { remainingPrincipal } = calculateLoanRemaining(oldLoan);
+  const cutoffDate = (topUpDate || new Date().toISOString().split('T')[0]).split('T')[0];
+
+  let overdueInterest = 0;
+  let overdueInstallmentCount = 0;
+  let futureWaivedInterest = 0;
+
+  for (const sch of oldLoan.schedules || []) {
+    if (sch.isPaid) continue;
+    const dueStr = (sch.dueDate || '').split('T')[0];
+    const interest = Number(sch.interest) || 0;
+    if (dueStr && dueStr <= cutoffDate) {
+      overdueInterest += interest;
+      overdueInstallmentCount++;
+    } else {
+      futureWaivedInterest += interest;
+    }
+  }
+
+  const adminFee = Math.round(safeNewAmount * 0.01);
+  const netBeforeAdmin = safeNewAmount - remainingPrincipal - overdueInterest;
+  const netToMember = netBeforeAdmin - adminFee;
+
+  return {
+    parentLoanId: oldLoan.id,
+    oldPlafon: Number(oldLoan.amount) || 0,
+    remainingPrincipal,
+    overdueInterest,
+    overdueInstallmentCount,
+    futureWaivedInterest,
+    newAmount: safeNewAmount,
+    adminFee,
+    netBeforeAdmin,
+    netToMember,
+    isValidNetPositive: safeNewAmount > 0 && netToMember > 0,
+  };
+}
 
 export interface CreateLoanInput {
   memberId: string;
@@ -197,10 +284,10 @@ export function mapSupabaseLoanToLoan(
     members?.find((mem) => mem.id === row.member_id)?.name ||
     'Anggota BJS';
 
-  // Periksa apakah seluruh jadwal sudah lunas
+  // Periksa apakah seluruh jadwal sudah lunas atau sudah dilunasi via Top Up
   const isAllPaid = schedules.length > 0 && schedules.every((s) => s.isPaid);
   const rawStatus = (row.status as LoanStatus) || 'aktif';
-  const effectiveStatus = isAllPaid ? 'lunas' : rawStatus;
+  const effectiveStatus: LoanStatus = rawStatus === 'lunas' ? 'lunas' : isAllPaid ? 'lunas' : rawStatus;
 
   return {
     id: row.id,
@@ -221,6 +308,16 @@ export function mapSupabaseLoanToLoan(
     approvedDate: row.approved_date || undefined,
     disbursedDate: row.disbursed_date || undefined,
     notes: row.notes || undefined,
+    isTopUp: Boolean(row.is_topup),
+    parentLoanId: row.parent_loan_id || undefined,
+    toppedUpByLoanId: row.topped_up_by_loan_id || undefined,
+    topUpSettledPrincipal:
+      row.topup_settled_principal != null ? Number(row.topup_settled_principal) : undefined,
+    topUpSettledInterest:
+      row.topup_settled_interest != null ? Number(row.topup_settled_interest) : undefined,
+    netDisbursedAmount:
+      row.net_disbursed_amount != null ? Number(row.net_disbursed_amount) : undefined,
+    settlementType: row.settlement_type || undefined,
   };
 }
 
@@ -233,11 +330,8 @@ export interface FetchLoansResponse {
 }
 
 /**
- * Mengambil data pinjaman, angsuran, dan jadwal dari tabel Supabase `loans`, `loan_repayments`, dan `loan_schedules`.
- *
- * Catatan Fallback:
- * Jika terjadi kegagalan jaringan atau query Supabase, data lokal/dummy
- * dari `loadLoans()` dan `loadRepayments()` digunakan sebagai cadangan sementara (fallback).
+ * Mengambil data pinjaman, angsuran, dan jadwal dari tabel Supabase `loans`, `loan_repayments`, dan `loan_schedules`
+ * tanpa menggunakan fallback lokal.
  */
 export async function fetchLoansFromSupabase(members?: Member[]): Promise<FetchLoansResponse> {
   try {
@@ -249,14 +343,12 @@ export async function fetchLoansFromSupabase(members?: Member[]): Promise<FetchL
 
     if (loansRes.error) {
       console.warn('Gagal memuat pinjaman dari Supabase:', loansRes.error.message);
-      const fallbackLoans = loadLocalFallbackLoans();
-      const fallbackRepayments = loadLocalFallbackRepayments();
       return {
-        loans: fallbackLoans,
-        repayments: fallbackRepayments,
-        error: 'Gagal mengambil data pinjaman dari server. Menampilkan data cadangan lokal.',
+        loans: [],
+        repayments: [],
+        error: `Gagal mengambil data pinjaman dari server: ${loansRes.error.message}`,
         fromSupabase: false,
-        totalLoansCount: fallbackLoans.length,
+        totalLoansCount: 0,
       };
     }
 
@@ -279,14 +371,12 @@ export async function fetchLoansFromSupabase(members?: Member[]): Promise<FetchL
     };
   } catch (err: any) {
     console.error('Terjadi pengecualian saat memuat data pinjaman dari Supabase:', err);
-    const fallbackLoans = loadLocalFallbackLoans();
-    const fallbackRepayments = loadLocalFallbackRepayments();
     return {
-      loans: fallbackLoans,
-      repayments: fallbackRepayments,
-      error: 'Terjadi kendala jaringan saat memuat data pinjaman. Menampilkan data cadangan lokal.',
+      loans: [],
+      repayments: [],
+      error: 'Terjadi kendala jaringan saat memuat data pinjaman.',
       fromSupabase: false,
-      totalLoansCount: fallbackLoans.length,
+      totalLoansCount: 0,
     };
   }
 }
@@ -301,10 +391,10 @@ export async function createLoan(
   validMembers?: Member[]
 ): Promise<CreateLoanActionResult> {
   // 1. Role Guard
-  if (!currentUser || currentUser.role !== 'pengurus') {
+  if (!isSimpanPinjamOfficer(currentUser)) {
     return {
       success: false,
-      message: 'Akses ditolak: Hanya Pengurus/Bendahara yang memiliki wewenang untuk mencatat pinjaman baru.',
+      message: 'Akses ditolak: Hanya Super Admin atau Admin Simpan Pinjam yang memiliki wewenang untuk mencatat pinjaman baru.',
       error: 'UNAUTHORIZED_ROLE',
     };
   }
@@ -402,6 +492,23 @@ export async function createLoan(
   };
 
   try {
+    // 8b. Cegah pembuatan pinjaman reguler jika anggota masih memiliki pinjaman aktif (wajib Top Up)
+    const { data: activeExistingLoans } = await supabase
+      .from('loans')
+      .select('id, status')
+      .eq('member_id', cleanMemberId)
+      .in('status', ['aktif', 'dicairkan']);
+
+    if (activeExistingLoans && activeExistingLoans.length > 0) {
+      return {
+        success: false,
+        message: `Anggota ${cleanMemberName} (${cleanMemberId}) masih memiliki pinjaman aktif (${activeExistingLoans
+          .map((l) => l.id)
+          .join(', ')}). Wajib menggunakan mekanisme Top Up Pinjaman.`,
+        error: 'ACTIVE_LOAN_REQUIRES_TOPUP',
+      };
+    }
+
     // 9. INSERT ke tabel `loans` Supabase
     const { data: insertedLoanRow, error: loanErr } = await supabase
       .from('loans')
@@ -418,7 +525,7 @@ export async function createLoan(
       };
     }
 
-    // 10. Generate dan INSERT ke tabel `loan_schedules`
+    // 10. Generate dan INSERT ke tabel `loan_schedules` (kolom id adalah bigint identity, jangan isi string id!)
     const scheduleRows = [];
     const mappedSchedules: LoanScheduleItem[] = [];
     const startDateObj = new Date(cleanDate);
@@ -427,10 +534,8 @@ export async function createLoan(
       const due = new Date(startDateObj);
       due.setMonth(due.getMonth() + m);
       const dueStr = isNaN(due.getTime()) ? cleanDate : due.toISOString().split('T')[0];
-      const scheduleId = `${loanId}-SCH-${String(m).padStart(2, '0')}`;
 
       scheduleRows.push({
-        id: scheduleId,
         loan_id: loanId,
         installment_no: m,
         due_date: dueStr,
@@ -500,19 +605,21 @@ export async function createLoan(
 
     // 12. Catat ke `audit_logs`
     try {
-      const validUserUuid = sanitizeUuid(currentUser.id);
-      const auditPayload = {
-        user_id: validUserUuid || undefined,
-        actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
-        actor_role: currentUser.role || 'pengurus',
-        action: 'CREATE_LOAN',
-        entity_type: 'loans',
-        entity_id: loanId,
-        description: `Mencatat Pinjaman Baru ${loanId} Plafon ${formatRupiah(amount)} (${tenorMonths} Bulan) untuk ${cleanMemberName}`,
-        new_data: { loan: loanRow, schedulesCount: scheduleRows.length },
-        created_at: new Date().toISOString(),
-      };
-      await supabase.from('audit_logs').insert([auditPayload]);
+      const validUserUuid = sanitizeUuid(currentUser?.id);
+      if (validUserUuid) {
+        const auditPayload = {
+          user_id: validUserUuid,
+          actor_name: currentUser?.name || currentUser?.username || 'Admin SP',
+          actor_role: currentUser?.role || 'admin_sp',
+          action: 'CREATE_LOAN',
+          entity_type: 'loans',
+          entity_id: loanId,
+          description: `Mencatat Pinjaman Baru ${loanId} Plafon ${formatRupiah(amount)} (${tenorMonths} Bulan) untuk ${cleanMemberName}`,
+          new_data: { loan: loanRow, schedulesCount: scheduleRows.length },
+          created_at: new Date().toISOString(),
+        };
+        await supabase.from('audit_logs').insert([auditPayload]);
+      }
     } catch (auditErr) {
       console.warn('Gagal mencatat audit log pinjaman:', auditErr);
     }
@@ -545,10 +652,10 @@ export async function createLoanRepayment(
   validMembers?: Member[]
 ): Promise<CreateLoanRepaymentActionResult> {
   // 1. Role Guard
-  if (!currentUser || currentUser.role !== 'pengurus') {
+  if (!isSimpanPinjamOfficer(currentUser)) {
     return {
       success: false,
-      message: 'Akses ditolak: Hanya Pengurus/Bendahara yang memiliki wewenang untuk mencatat pembayaran angsuran.',
+      message: 'Akses ditolak: Hanya Super Admin atau Admin Simpan Pinjam yang memiliki wewenang untuk mencatat pembayaran angsuran.',
       error: 'UNAUTHORIZED_ROLE',
     };
   }
@@ -601,6 +708,14 @@ export async function createLoanRepayment(
       };
     }
 
+    if (loanRow.status === 'lunas' || loanRow.settlement_type === 'topup' || (loanRow as any).settlementType === 'topup') {
+      return {
+        success: false,
+        message: `Pinjaman ${loanId} sudah berstatus LUNAS${loanRow.settlement_type === 'topup' || (loanRow as any).settlementType === 'topup' ? ' (dilunasi via Top Up)' : ''} sehingga tidak dapat menerima angsuran baru.`,
+        error: 'LOAN_ALREADY_SETTLED',
+      };
+    }
+
     const memberId = loanRow.member_id || loanRow.memberId || '';
     const memberName =
       loanRow.member_name ||
@@ -626,7 +741,7 @@ export async function createLoanRepayment(
     const repaymentId = `ANG-${now.getFullYear().toString().slice(-2)}${String(now.getMonth() + 1).padStart(2, '0')}-${Date.now().toString().slice(-4)}-${String(installmentNo).padStart(2, '0')}`;
     const transactionDate = input.paidDate?.trim() || now.toISOString();
     const dateOnly = transactionDate.split('T')[0].split(' ')[0];
-    const adminName = input.adminName?.trim() || currentUser.name || currentUser.username || 'Admin Bendahara BJS';
+    const adminName = input.adminName?.trim() || currentUser?.name || currentUser?.username || 'Admin Bendahara BJS';
 
     // 6. INSERT ke tabel `loan_repayments`
     const repPayload = {
@@ -732,19 +847,21 @@ export async function createLoanRepayment(
 
     // 10. Catat ke `audit_logs`
     try {
-      const validUserUuid = sanitizeUuid(currentUser.id);
-      const auditPayload = {
-        user_id: validUserUuid || undefined,
-        actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
-        actor_role: currentUser.role || 'pengurus',
-        action: 'CREATE_LOAN_REPAYMENT',
-        entity_type: 'loan_repayments',
-        entity_id: repaymentId,
-        description: `Mencatat Pembayaran Angsuran #${installmentNo} Pinjaman ${loanId} Total ${formatRupiah(totalPaid)} untuk ${memberName}`,
-        new_data: repPayload,
-        created_at: new Date().toISOString(),
-      };
-      await supabase.from('audit_logs').insert([auditPayload]);
+      const validUserUuid = sanitizeUuid(currentUser?.id);
+      if (validUserUuid) {
+        const auditPayload = {
+          user_id: validUserUuid,
+          actor_name: currentUser?.name || currentUser?.username || 'Admin SP',
+          actor_role: currentUser?.role || 'admin_sp',
+          action: 'CREATE_LOAN_REPAYMENT',
+          entity_type: 'loan_repayments',
+          entity_id: repaymentId,
+          description: `Mencatat Pembayaran Angsuran #${installmentNo} Pinjaman ${loanId} Total ${formatRupiah(totalPaid)} untuk ${memberName}`,
+          new_data: repPayload,
+          created_at: new Date().toISOString(),
+        };
+        await supabase.from('audit_logs').insert([auditPayload]);
+      }
     } catch (auditErr) {
       console.warn('Gagal mencatat audit log angsuran:', auditErr);
     }
@@ -773,15 +890,29 @@ export async function updateLoanScheduleStatus(
   input: UpdateLoanScheduleInput,
   currentUser?: AuthUser | null
 ): Promise<{ success: boolean; message: string; error?: string }> {
-  if (!currentUser || currentUser.role !== 'pengurus') {
+  if (!isSimpanPinjamOfficer(currentUser)) {
     return {
       success: false,
-      message: 'Akses ditolak: Hanya Pengurus yang dapat memperbarui status jadwal angsuran.',
+      message: 'Akses ditolak: Hanya Super Admin atau Admin Simpan Pinjam yang dapat memperbarui status jadwal angsuran.',
       error: 'UNAUTHORIZED_ROLE',
     };
   }
 
   try {
+    const { data: loanRow } = await supabase
+      .from('loans')
+      .select('id, status, settlement_type, topped_up_by_loan_id')
+      .eq('id', input.loanId)
+      .maybeSingle();
+
+    if (loanRow && (loanRow.settlement_type === 'topup' || loanRow.topped_up_by_loan_id)) {
+      return {
+        success: false,
+        message: `Jadwal pinjaman ${input.loanId} sudah ditutup melalui Top Up (${loanRow.topped_up_by_loan_id || 'TOPUP'}) dan tidak boleh diubah secara manual.`,
+        error: 'LOAN_SETTLED_BY_TOPUP',
+      };
+    }
+
     const paidDate = input.isPaid
       ? (input.paidDate || new Date().toISOString().split('T')[0])
       : null;
@@ -831,10 +962,10 @@ export async function approveLoan(
   currentUser?: AuthUser | null,
   cachedLoans?: Loan[]
 ): Promise<{ success: boolean; message: string; error?: string }> {
-  if (!currentUser || currentUser.role !== 'pengurus') {
+  if (!isSimpanPinjamOfficer(currentUser)) {
     return {
       success: false,
-      message: 'Akses ditolak: Hanya Pengurus yang dapat menyetujui pinjaman.',
+      message: 'Akses ditolak: Hanya Super Admin atau Admin Simpan Pinjam yang dapat menyetujui pinjaman.',
       error: 'UNAUTHORIZED_ROLE',
     };
   }
@@ -899,18 +1030,20 @@ export async function approveLoan(
     }
 
     try {
-      const validUserUuid = sanitizeUuid(currentUser.id);
-      const auditPayload = {
-        user_id: validUserUuid || undefined,
-        actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
-        actor_role: currentUser.role || 'pengurus',
-        action: 'APPROVE_LOAN',
-        entity_type: 'loans',
-        entity_id: loanId,
-        description: `Menyetujui & mencairkan pinjaman ${loanId}`,
-        created_at: new Date().toISOString(),
-      };
-      await supabase.from('audit_logs').insert([auditPayload]);
+      const validUserUuid = sanitizeUuid(currentUser?.id);
+      if (validUserUuid) {
+        const auditPayload = {
+          user_id: validUserUuid,
+          actor_name: currentUser?.name || currentUser?.username || 'Admin SP',
+          actor_role: currentUser?.role || 'admin_sp',
+          action: 'APPROVE_LOAN',
+          entity_type: 'loans',
+          entity_id: loanId,
+          description: `Menyetujui & mencairkan pinjaman ${loanId}`,
+          created_at: new Date().toISOString(),
+        };
+        await supabase.from('audit_logs').insert([auditPayload]);
+      }
     } catch {}
 
     return { success: true, message: `Pinjaman ${loanId} berhasil disetujui dan dicairkan.` };
@@ -926,10 +1059,10 @@ export async function rejectLoan(
   loanId: string,
   currentUser?: AuthUser | null
 ): Promise<{ success: boolean; message: string; error?: string }> {
-  if (!currentUser || currentUser.role !== 'pengurus') {
+  if (!isSimpanPinjamOfficer(currentUser)) {
     return {
       success: false,
-      message: 'Akses ditolak: Hanya Pengurus yang dapat menolak pinjaman.',
+      message: 'Akses ditolak: Hanya Super Admin atau Admin Simpan Pinjam yang dapat menolak pinjaman.',
       error: 'UNAUTHORIZED_ROLE',
     };
   }
@@ -948,18 +1081,20 @@ export async function rejectLoan(
     }
 
     try {
-      const validUserUuid = sanitizeUuid(currentUser.id);
-      const auditPayload = {
-        user_id: validUserUuid || undefined,
-        actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
-        actor_role: currentUser.role || 'pengurus',
-        action: 'REJECT_LOAN',
-        entity_type: 'loans',
-        entity_id: loanId,
-        description: `Menolak permohonan pinjaman ${loanId}`,
-        created_at: new Date().toISOString(),
-      };
-      await supabase.from('audit_logs').insert([auditPayload]);
+      const validUserUuid = sanitizeUuid(currentUser?.id);
+      if (validUserUuid) {
+        const auditPayload = {
+          user_id: validUserUuid,
+          actor_name: currentUser?.name || currentUser?.username || 'Admin SP',
+          actor_role: currentUser?.role || 'admin_sp',
+          action: 'REJECT_LOAN',
+          entity_type: 'loans',
+          entity_id: loanId,
+          description: `Menolak permohonan pinjaman ${loanId}`,
+          created_at: new Date().toISOString(),
+        };
+        await supabase.from('audit_logs').insert([auditPayload]);
+      }
     } catch {}
 
     return { success: true, message: `Pinjaman ${loanId} telah ditolak.` };
@@ -969,24 +1104,43 @@ export async function rejectLoan(
 }
 
 /**
- * Menghapus pinjaman (beserta jadwal, angsuran, dan mutasi kas terkait) dari database.
+ * Menghapus pinjaman (khusus Super Admin; menolak pinjaman yang terhubung dengan riwayat Top Up).
  */
 export async function deleteLoan(
   loanId: string,
   currentUser?: AuthUser | null
 ): Promise<{ success: boolean; message: string; error?: string }> {
-  if (!currentUser || currentUser.role !== 'pengurus') {
+  if (!isSuperAdmin(currentUser)) {
     return {
       success: false,
-      message: 'Akses ditolak: Hanya Pengurus yang dapat menghapus pinjaman.',
+      message: 'Akses ditolak: Hanya Super Admin yang memiliki wewenang untuk menghapus pinjaman.',
       error: 'UNAUTHORIZED_ROLE',
     };
   }
 
   try {
+    const { data: existing } = await supabase
+      .from('loans')
+      .select('id, is_topup, parent_loan_id, topped_up_by_loan_id, settlement_type')
+      .eq('id', loanId)
+      .maybeSingle();
+
+    if (
+      existing &&
+      (existing.is_topup ||
+        existing.parent_loan_id ||
+        existing.topped_up_by_loan_id ||
+        existing.settlement_type === 'topup')
+    ) {
+      return {
+        success: false,
+        message: `Pinjaman ${loanId} merupakan bagian dari riwayat Top Up Pinjaman dan tidak boleh dihapus demi keutuhan jejak audit.`,
+        error: 'TOPUP_CHAIN_PROTECTED',
+      };
+    }
+
     await supabase.from('loan_schedules').delete().eq('loan_id', loanId);
     await supabase.from('loan_repayments').delete().eq('loan_id', loanId);
-    // Bersihkan juga entri arus kas pencairan pinjaman terkait jika ada
     await supabase.from('cash_flow_records').delete().eq('reference_id', loanId);
 
     const { error } = await supabase.from('loans').delete().eq('id', loanId);
@@ -996,23 +1150,161 @@ export async function deleteLoan(
     }
 
     try {
-      const validUserUuid = sanitizeUuid(currentUser.id);
-      const auditPayload = {
-        user_id: validUserUuid || undefined,
-        actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
-        actor_role: currentUser.role || 'pengurus',
-        action: 'DELETE_LOAN',
-        entity_type: 'loans',
-        entity_id: loanId,
-        description: `Menghapus data pinjaman ${loanId}`,
-        created_at: new Date().toISOString(),
-      };
-      await supabase.from('audit_logs').insert([auditPayload]);
+      const validUserUuid = sanitizeUuid(currentUser?.id);
+      if (validUserUuid) {
+        const auditPayload = {
+          user_id: validUserUuid,
+          actor_name: currentUser?.name || currentUser?.username || 'Super Admin',
+          actor_role: currentUser?.role || 'super_admin',
+          action: 'DELETE_LOAN',
+          entity_type: 'loans',
+          entity_id: loanId,
+          description: `Menghapus data pinjaman ${loanId}`,
+          created_at: new Date().toISOString(),
+        };
+        await supabase.from('audit_logs').insert([auditPayload]);
+      }
     } catch {}
 
     return { success: true, message: `Pinjaman ${loanId} berhasil dihapus.` };
   } catch (err: any) {
     return { success: false, message: err.message, error: err.message };
+  }
+}
+
+/**
+ * Memproses Top Up Pinjaman secara atomik via RPC PostgreSQL `process_loan_topup`.
+ */
+export async function createTopUpLoan(
+  input: CreateTopUpLoanInput,
+  currentUser?: AuthUser | null,
+  validMembers?: Member[],
+  parentLoan?: Loan
+): Promise<CreateTopUpLoanActionResult> {
+  if (!isSimpanPinjamOfficer(currentUser)) {
+    return {
+      success: false,
+      message: 'Akses ditolak: Hanya Super Admin atau Admin Simpan Pinjam yang berwenang memproses Top Up Pinjaman.',
+      error: 'UNAUTHORIZED_ROLE',
+    };
+  }
+
+  const parentLoanId = input.parentLoanId?.trim();
+  if (!parentLoanId) {
+    return {
+      success: false,
+      message: 'Pinjaman lama yang akan dilunasi wajib dipilih.',
+      error: 'MISSING_PARENT_LOAN',
+    };
+  }
+
+  const newAmount = Number(input.newAmount);
+  if (typeof newAmount !== 'number' || isNaN(newAmount) || !isFinite(newAmount) || newAmount <= 0) {
+    return {
+      success: false,
+      message: 'Plafon pinjaman baru harus lebih besar dari Rp 0.',
+      error: 'INVALID_AMOUNT',
+    };
+  }
+
+  const tenorMonths = Math.round(Number(input.tenorMonths));
+  if (isNaN(tenorMonths) || tenorMonths < 1 || tenorMonths > 60) {
+    return {
+      success: false,
+      message: 'Tenor pinjaman baru harus antara 1 sampai 60 bulan.',
+      error: 'INVALID_TENOR',
+    };
+  }
+
+  const cleanDate = (input.startDate || '').trim() || new Date().toISOString().split('T')[0];
+  if (isNaN(new Date(cleanDate).getTime())) {
+    return {
+      success: false,
+      message: 'Tanggal pencairan Top Up tidak valid.',
+      error: 'INVALID_DATE',
+    };
+  }
+
+  const preview = parentLoan ? calculateTopUpPreview(parentLoan, newAmount, cleanDate) : undefined;
+  if (preview && !preview.isValidNetPositive) {
+    return {
+      success: false,
+      message: `Dana bersih diterima anggota (${formatRupiah(preview.netToMember)}) harus lebih besar dari Rp 0 setelah dikurangi pelunasan pokok lama, tunggakan bunga, dan biaya admin 1%.`,
+      preview,
+      error: 'NON_POSITIVE_NET_DISBURSEMENT',
+    };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('process_loan_topup', {
+      p_parent_loan_id: parentLoanId,
+      p_new_amount: newAmount,
+      p_tenor_months: tenorMonths,
+      p_start_date: cleanDate,
+      p_purpose: input.purpose?.trim() || 'Top Up Pinjaman Anggota',
+      p_notes: input.notes?.trim() || null,
+      p_actor_name: currentUser?.name || currentUser?.username || 'Admin Simpan Pinjam',
+    });
+
+    if (error) {
+      const msg = error.message || 'Gagal memproses Top Up Pinjaman di database.';
+      if (msg.includes('process_loan_topup') && msg.toLowerCase().includes('function')) {
+        return {
+          success: false,
+          message:
+            'Fungsi database `process_loan_topup` belum terpasang di Supabase. Jalankan skrip SQL Tahap 3E terlebih dahulu.',
+          error: 'RPC_NOT_FOUND',
+        };
+      }
+      return {
+        success: false,
+        message: `Top Up Pinjaman ditolak server: ${msg}`,
+        error: msg,
+      };
+    }
+
+    const row = Array.isArray(data) ? data[0] : data;
+    const newLoanId = String(row?.new_loan_id || '');
+    const settledPrincipal = Number(row?.settled_principal ?? preview?.remainingPrincipal ?? 0);
+    const settledInterest = Number(row?.settled_interest ?? preview?.overdueInterest ?? 0);
+    const adminFee = Number(row?.admin_fee ?? Math.round(newAmount * 0.01));
+    const netDisbursedToMember = Number(
+      row?.net_disbursed_to_member ?? newAmount - settledPrincipal - settledInterest - adminFee
+    );
+    const netCashOutflow = Number(row?.net_cash_outflow ?? newAmount - settledPrincipal);
+
+    let createdLoan: Loan | undefined;
+    if (newLoanId) {
+      const [loanFetch, schFetch] = await Promise.all([
+        supabase.from('loans').select('*').eq('id', newLoanId).maybeSingle(),
+        supabase.from('loan_schedules').select('*').eq('loan_id', newLoanId).order('installment_no', { ascending: true }),
+      ]);
+      if (loanFetch.data) {
+        createdLoan = mapSupabaseLoanToLoan(loanFetch.data, [], validMembers, schFetch.data || []);
+      }
+    }
+
+    return {
+      success: true,
+      message: `Top Up Pinjaman ${newLoanId || ''} berhasil! Pinjaman lama ${parentLoanId} telah dilunasi (${formatRupiah(settledPrincipal)}) dan dana bersih ke anggota sebesar ${formatRupiah(netDisbursedToMember)} telah dicatat.`,
+      data: createdLoan,
+      preview,
+      rpcResult: {
+        newLoanId,
+        parentLoanId,
+        settledPrincipal,
+        settledInterest,
+        adminFee,
+        netDisbursedToMember,
+        netCashOutflow,
+      },
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      message: `Terjadi kendala jaringan saat memproses Top Up Pinjaman: ${err.message || 'Koneksi gagal'}`,
+      error: err.message,
+    };
   }
 }
 

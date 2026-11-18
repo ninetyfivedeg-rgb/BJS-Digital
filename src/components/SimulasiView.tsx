@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Calculator,
   Coins,
@@ -29,6 +29,7 @@ import {
 } from '../types';
 import { formatRupiah, formatNumber } from '../utils/formatters';
 import { calculateShuSimulation, calculateMembersShuDetails } from '../services/shuService';
+import { isAnggotaUser, isSuperAdmin } from '../utils/permissions';
 
 interface SimulasiViewProps {
   members: Member[];
@@ -53,8 +54,21 @@ export const SimulasiView: React.FC<SimulasiViewProps> = ({
   isFromSupabase = false,
   onApplyLoanToForm,
 }) => {
-  const isAnggota = userRole === 'anggota' || currentUser?.role === 'anggota';
+  const effectiveUser: AuthUser | null = currentUser || {
+    id: '',
+    username: '',
+    name: '',
+    role: userRole,
+  };
+  const isAnggota = isAnggotaUser(effectiveUser);
+  const canViewShuWhatIf = isSuperAdmin(effectiveUser);
   const [activeTab, setActiveTab] = useState<'pinjaman' | 'simpanan' | 'shu'>('pinjaman');
+
+  useEffect(() => {
+    if (!canViewShuWhatIf && activeTab === 'shu') {
+      setActiveTab('pinjaman');
+    }
+  }, [canViewShuWhatIf, activeTab]);
 
   // --- 1. SIMULASI PINJAMAN STATE ---
   const [loanPlafon, setLoanPlafon] = useState<number>(5000000);
@@ -198,17 +212,19 @@ export const SimulasiView: React.FC<SimulasiViewProps> = ({
             <PiggyBank className="w-4 h-4" />
             <span>Simpanan</span>
           </button>
-          <button
-            onClick={() => setActiveTab('shu')}
-            className={`px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
-              activeTab === 'shu'
-                ? 'bg-white text-blue-950 shadow-md'
-                : 'text-blue-200 hover:text-white'
-            }`}
-          >
-            <Scale className="w-4 h-4 text-emerald-600" />
-            <span>Simulasi SHU (What-If)</span>
-          </button>
+          {canViewShuWhatIf && (
+            <button
+              onClick={() => setActiveTab('shu')}
+              className={`px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                activeTab === 'shu'
+                  ? 'bg-white text-blue-950 shadow-md'
+                  : 'text-blue-200 hover:text-white'
+              }`}
+            >
+              <Scale className="w-4 h-4 text-emerald-600" />
+              <span>Simulasi SHU (What-If)</span>
+            </button>
+          )}
         </div>
       </div>
 

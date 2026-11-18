@@ -25,6 +25,7 @@ import { formatRupiah, formatDateIndo } from '../utils/formatters';
 import { calculateMemberSavings } from '../utils/storage';
 import { printHtmlContent } from '../utils/printHelper';
 import { ReceiptData } from './ReceiptModal';
+import { isAnggotaUser, isSimpanPinjamOfficer } from '../utils/permissions';
 
 interface SimpananViewProps {
   members: Member[];
@@ -187,7 +188,14 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
   });
 
   // Role-based scoping for Anggota vs Pengurus
-  const isAnggota = userRole === 'anggota' || currentUser?.role === 'anggota';
+  const effectiveUser: AuthUser | null = currentUser || {
+    id: '',
+    username: '',
+    name: '',
+    role: userRole,
+  };
+  const isAnggota = isAnggotaUser(effectiveUser);
+  const canWriteSimpanan = isSimpanPinjamOfficer(effectiveUser);
   const activeMemberId = (currentUser?.memberId || (isAnggota ? currentUser?.username : undefined))?.trim().toLowerCase();
   const effectiveSavings = isAnggota && activeMemberId
     ? savings.filter((s) => s.memberId?.trim().toLowerCase() === activeMemberId)
@@ -782,7 +790,7 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
       </div>
 
       {/* Role Notice for Anggota */}
-      {userRole === 'anggota' && (
+      {isAnggota && (
         <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
@@ -833,8 +841,8 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
           </button>
         </div>
 
-        {/* Action Buttons (Only visible for Pengurus) */}
-        {userRole === 'pengurus' && (
+        {/* Action Buttons (Only visible for Super Admin & Admin SP) */}
+        {canWriteSimpanan && (
           <div className="flex items-center gap-2">
             <button
               onClick={() => {
@@ -910,7 +918,7 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                 />
               </div>
 
-              {userRole === 'pengurus' && (
+              {canWriteSimpanan && (
                 <button
                   onClick={handleOpenCollectiveWajib}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-900 hover:bg-blue-950 text-white font-bold text-xs shadow-xs transition cursor-pointer shrink-0"
@@ -933,7 +941,7 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                   <th className="py-2.5 px-4 text-right">Simpanan Pokok</th>
                   <th className="py-2.5 px-4 text-right">Simpanan Wajib</th>
                   <th className="py-2.5 px-4 text-right">Total Ekuitas</th>
-                  {userRole === 'pengurus' && (
+                  {canWriteSimpanan && (
                     <th className="py-2.5 px-4 text-center">Aksi</th>
                   )}
                 </tr>
@@ -950,7 +958,7 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                     return (
                       <tr>
                         <td
-                          colSpan={userRole === 'pengurus' ? 7 : 6}
+                          colSpan={canWriteSimpanan ? 7 : 6}
                           className="py-8 text-center text-slate-400"
                         >
                           Tidak ada anggota yang cocok dengan pencarian.
@@ -981,7 +989,7 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                         <td className="py-2.5 px-4 text-right font-mono font-black text-blue-950">
                           {formatRupiah(totalEkuitas)}
                         </td>
-                        {userRole === 'pengurus' && (
+                        {canWriteSimpanan && (
                           <td className="py-2.5 px-4 text-center">
                             <button
                               onClick={() => {
@@ -1031,7 +1039,7 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                 </p>
               </div>
 
-              {userRole === 'pengurus' && (
+              {canWriteSimpanan && (
                 <button
                   onClick={() => {
                     setBerjangkaForm((prev) => ({
@@ -1109,7 +1117,7 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                 <PiggyBank className="w-12 h-12 mx-auto mb-2 text-slate-300" />
                 <p className="font-bold text-slate-600 text-sm">Belum ada penempatan simpanan berjangka</p>
                 <p className="text-xs text-slate-400 mt-1">
-                  {userRole === 'pengurus'
+                  {canWriteSimpanan
                     ? 'Klik tombol "+ Buka Bilyet Berjangka Baru" di atas untuk menambahkan penempatan dana baru.'
                     : 'Belum ada data penempatan simpanan berjangka.'}
                 </p>
@@ -1187,7 +1195,7 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                                 <span>Cetak</span>
                               </button>
 
-                              {userRole === 'pengurus' && !isFinished && (
+                              {canWriteSimpanan && !isFinished && (
                                 <button
                                   type="button"
                                   onClick={() => setBilyetToComplete(tx)}
@@ -1199,7 +1207,7 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
                                 </button>
                               )}
 
-                              {userRole === 'pengurus' && (
+                              {canWriteSimpanan && (
                                 <button
                                   type="button"
                                   onClick={() => setBilyetToDelete(tx)}

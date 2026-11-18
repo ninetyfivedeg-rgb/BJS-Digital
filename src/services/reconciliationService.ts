@@ -2,6 +2,7 @@ import { supabase } from '../lib/supabase';
 import { AuthUser, OpeningReconciliationData, CashFlowRecord } from '../types';
 import { formatRupiah } from '../utils/formatters';
 import { sanitizeUuid } from '../utils/storage';
+import { isSuperAdmin } from '../utils/permissions';
 
 export interface ReconciliationActionResult {
   success: boolean;
@@ -126,6 +127,14 @@ export async function saveOpeningReconciliationDraft(
   data: Omit<OpeningReconciliationData, 'status' | 'recordedAt' | 'recordedBy'>,
   currentUser?: AuthUser | null
 ): Promise<ReconciliationActionResult> {
+  if (!isSuperAdmin(currentUser)) {
+    return {
+      success: false,
+      message: 'Akses ditolak: Hanya Super Admin yang berwenang menyimpan draft rekonsiliasi.',
+      error: 'UNAUTHORIZED_ROLE',
+    };
+  }
+
   try {
     const safeBank = Math.max(0, Number(data.verifiedBank) || 0);
     const safeCash = Math.max(0, Number(data.verifiedCash) || 0);
@@ -139,15 +148,23 @@ export async function saveOpeningReconciliationDraft(
       totalVerified,
       difference: diff,
       status: 'draft',
-      recordedBy: currentUser?.name || currentUser?.username || 'Pengurus BJS',
+      recordedBy: currentUser?.name || currentUser?.username || 'Super Admin',
       recordedAt: new Date().toISOString(),
     };
 
     const validUserUuid = sanitizeUuid(currentUser?.id);
+    if (!validUserUuid) {
+      return {
+        success: false,
+        message: 'Sesi pengguna tidak memiliki ID UUID yang sah untuk mencatat draft audit.',
+        error: 'INVALID_USER_ID',
+      };
+    }
+
     const auditPayload = {
-      user_id: validUserUuid || undefined,
-      actor_name: currentUser?.name || currentUser?.username || 'Pengurus/Bendahara BJS',
-      actor_role: currentUser?.role || 'pengurus',
+      user_id: validUserUuid,
+      actor_name: currentUser?.name || currentUser?.username || 'Super Admin',
+      actor_role: currentUser?.role || 'super_admin',
       action: 'VERIFY_OPENING_BALANCE',
       entity_type: 'opening_reconciliation',
       entity_id: data.baNumber?.trim() || `DRAFT-${Date.now()}`,
@@ -194,6 +211,14 @@ export async function verifyOpeningReconciliation(
   data: Omit<OpeningReconciliationData, 'status' | 'verifiedAt' | 'verifiedBy' | 'recordedAt' | 'recordedBy'>,
   currentUser?: AuthUser | null
 ): Promise<ReconciliationActionResult> {
+  if (!isSuperAdmin(currentUser)) {
+    return {
+      success: false,
+      message: 'Akses ditolak: Hanya Super Admin yang berwenang memverifikasi saldo awal.',
+      error: 'UNAUTHORIZED_ROLE',
+    };
+  }
+
   try {
     const cleanBa = data.baNumber?.trim();
     if (!cleanBa) {
@@ -286,24 +311,26 @@ export async function verifyOpeningReconciliation(
 
     // 3. Catat status VERIFIED ke audit_logs
     const validVerifyUuid = sanitizeUuid(currentUser?.id);
-    const auditPayload = {
-      user_id: validVerifyUuid || undefined,
-      actor_name: currentUser?.name || currentUser?.username || 'Pengurus/Bendahara BJS',
-      actor_role: currentUser?.role || 'pengurus',
-      action: 'VERIFY_OPENING_BALANCE',
-      entity_type: 'opening_reconciliation',
-      entity_id: cleanBa,
-      description: `Pengesahan Verifikasi Saldo Awal Kas & Bank (Total Terverifikasi: ${formatRupiah(totalVerified)}, Selisih Historis Terbuka: ${formatRupiah(diff)}) - BA: ${cleanBa}`,
-      new_data: verifiedRecord,
-      created_at: new Date().toISOString(),
-    };
+    if (validVerifyUuid) {
+      const auditPayload = {
+        user_id: validVerifyUuid,
+        actor_name: currentUser?.name || currentUser?.username || 'Super Admin',
+        actor_role: currentUser?.role || 'super_admin',
+        action: 'VERIFY_OPENING_BALANCE',
+        entity_type: 'opening_reconciliation',
+        entity_id: cleanBa,
+        description: `Pengesahan Verifikasi Saldo Awal Kas & Bank (Total Terverifikasi: ${formatRupiah(totalVerified)}, Selisih Historis Terbuka: ${formatRupiah(diff)}) - BA: ${cleanBa}`,
+        new_data: verifiedRecord,
+        created_at: new Date().toISOString(),
+      };
 
-    const { error: auditError } = await supabase
-      .from('audit_logs')
-      .insert([auditPayload]);
+      const { error: auditError } = await supabase
+        .from('audit_logs')
+        .insert([auditPayload]);
 
-    if (auditError) {
-      console.warn('Gagal mencatat verifikasi ke audit_logs:', auditError.message);
+      if (auditError) {
+        console.warn('Gagal mencatat verifikasi ke audit_logs:', auditError.message);
+      }
     }
 
     return {
@@ -333,6 +360,14 @@ export async function reverseOpeningReconciliation(
   currentReconciliation: OpeningReconciliationData,
   currentUser?: AuthUser | null
 ): Promise<ReconciliationActionResult> {
+  if (!isSuperAdmin(currentUser)) {
+    return {
+      success: false,
+      message: 'Akses ditolak: Hanya Super Admin yang berwenang membatalkan (reversal) rekonsiliasi saldo awal.',
+      error: 'UNAUTHORIZED_ROLE',
+    };
+  }
+
   try {
     const cleanReason = reversalReason?.trim();
     if (!cleanReason) {
@@ -397,25 +432,27 @@ export async function reverseOpeningReconciliation(
 
     // Catat log reversal ke audit_logs
     const validRevUuid = sanitizeUuid(currentUser?.id);
-    const auditPayload = {
-      user_id: validRevUuid || undefined,
-      actor_name: currentUser?.name || currentUser?.username || 'Pengurus/Bendahara BJS',
-      actor_role: currentUser?.role || 'pengurus',
-      action: 'REVERSE_OPENING_BALANCE',
-      entity_type: 'opening_reconciliation',
-      entity_id: currentReconciliation.baNumber,
-      description: `Pembatalan / Reversal Saldo Awal Kas & Bank - BA: ${currentReconciliation.baNumber} - Alasan: ${cleanReason}`,
-      old_data: currentReconciliation,
-      new_data: reversedData,
-      created_at: new Date().toISOString(),
-    };
+    if (validRevUuid) {
+      const auditPayload = {
+        user_id: validRevUuid,
+        actor_name: currentUser?.name || currentUser?.username || 'Super Admin',
+        actor_role: currentUser?.role || 'super_admin',
+        action: 'REVERSE_OPENING_BALANCE',
+        entity_type: 'opening_reconciliation',
+        entity_id: currentReconciliation.baNumber,
+        description: `Pembatalan / Reversal Saldo Awal Kas & Bank - BA: ${currentReconciliation.baNumber} - Alasan: ${cleanReason}`,
+        old_data: currentReconciliation,
+        new_data: reversedData,
+        created_at: new Date().toISOString(),
+      };
 
-    const { error: auditError } = await supabase
-      .from('audit_logs')
-      .insert([auditPayload]);
+      const { error: auditError } = await supabase
+        .from('audit_logs')
+        .insert([auditPayload]);
 
-    if (auditError) {
-      console.warn('Gagal mencatat reversal ke audit_logs:', auditError.message);
+      if (auditError) {
+        console.warn('Gagal mencatat reversal ke audit_logs:', auditError.message);
+      }
     }
 
     return {

@@ -33,6 +33,12 @@ import {
 } from '../types';
 import { formatRupiah, formatDateIndo } from '../utils/formatters';
 import { printHtmlContent } from '../utils/printHelper';
+import {
+  canManageBusinessUnit,
+  getManagedBusinessUnit,
+  isBusinessUnitManager,
+  isSuperAdmin,
+} from '../utils/permissions';
 
 export const BUSINESS_UNIT_CONFIGS: Record<
   BusinessUnitId,
@@ -130,26 +136,63 @@ export const LaporanUnitUsahaView: React.FC<LaporanUnitUsahaViewProps> = ({
   isFromSupabase = false,
   onRefresh,
 }) => {
-  const [activeUnitTab, setActiveUnitTab] = useState<'semua' | BusinessUnitId>(activeUnitId);
+  const effectiveUser: AuthUser | null = currentUser || {
+    id: '',
+    username: '',
+    name: '',
+    role: userRole,
+  };
+  const isFullAdmin = isSuperAdmin(effectiveUser);
+  const managedUnit = getManagedBusinessUnit(effectiveUser);
+  const isRestrictedUnitManager = isBusinessUnitManager(effectiveUser) && managedUnit !== null;
+
+  const [activeUnitTab, setActiveUnitTab] = useState<'semua' | BusinessUnitId>(
+    isRestrictedUnitManager && managedUnit ? managedUnit : activeUnitId
+  );
   const [activeReportMode, setActiveReportMode] = useState<'labarugi' | 'neraca' | 'transaksi'>('labarugi');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  // Sync internal tab state if controlled from outside (Sidebar)
+  // Sync internal tab state if controlled from outside (Sidebar), and lock to managed unit for unit managers
   useEffect(() => {
+    if (isRestrictedUnitManager && managedUnit) {
+      if (activeUnitTab !== managedUnit) {
+        setActiveUnitTab(managedUnit);
+      }
+      if (setActiveUnitId && activeUnitId !== managedUnit) {
+        setActiveUnitId(managedUnit);
+      }
+      return;
+    }
     setActiveUnitTab(activeUnitId);
-  }, [activeUnitId]);
+  }, [activeUnitId, activeUnitTab, isRestrictedUnitManager, managedUnit, setActiveUnitId]);
 
   const handleUnitTabChange = (newUnit: 'semua' | BusinessUnitId) => {
+    if (isRestrictedUnitManager && managedUnit && newUnit !== managedUnit) {
+      return;
+    }
     setActiveUnitTab(newUnit);
     if (setActiveUnitId) {
       setActiveUnitId(newUnit);
     }
   };
 
-  // Form state - default unit is the current activeUnitTab (or 'alat_kebakaran' if semua)
-  const currentTargetUnit: BusinessUnitId = activeUnitTab === 'semua' ? 'alat_kebakaran' : activeUnitTab;
+  // Form state - default unit is the current activeUnitTab (or managedUnit / 'alat_kebakaran' if semua)
+  const currentTargetUnit: BusinessUnitId =
+    isRestrictedUnitManager && managedUnit
+      ? managedUnit
+      : activeUnitTab === 'semua'
+      ? 'alat_kebakaran'
+      : activeUnitTab;
+
+  const canManageCurrentTab =
+    activeUnitTab === 'semua' ? isFullAdmin : canManageBusinessUnit(effectiveUser, activeUnitTab);
+
+  const visibleUnitIds: BusinessUnitId[] =
+    isRestrictedUnitManager && managedUnit
+      ? [managedUnit]
+      : (Object.keys(BUSINESS_UNIT_CONFIGS) as BusinessUnitId[]);
 
   const [form, setForm] = useState<{
     date: string;
@@ -181,8 +224,11 @@ export const LaporanUnitUsahaView: React.FC<LaporanUnitUsahaViewProps> = ({
 
   // Filter transactions for currently selected unit
   const filteredTransactions = businessTransactions.filter((tx) => {
-    if (activeUnitTab === 'semua') return true;
     const txUnit = tx.unitId || (tx.unitKey === 'apar_sales' ? 'alat_kebakaran' : tx.unitKey === 'apar_refill' ? 'apar' : tx.unitKey);
+    if (isRestrictedUnitManager && managedUnit) {
+      return txUnit === managedUnit;
+    }
+    if (activeUnitTab === 'semua') return true;
     return txUnit === activeUnitTab;
   });
 
@@ -190,8 +236,8 @@ export const LaporanUnitUsahaView: React.FC<LaporanUnitUsahaViewProps> = ({
     e.preventDefault();
     if (isSubmitting) return;
 
-    if (userRole !== 'pengurus') {
-      setSubmitError('Akses ditolak: Hanya Pengurus yang memiliki hak akses untuk mencatat transaksi Unit Usaha.');
+    if (!canManageBusinessUnit(effectiveUser, currentTargetUnit)) {
+      setSubmitError('Akses ditolak: Anda tidak memiliki wewenang untuk mencatat transaksi pada unit usaha ini.');
       return;
     }
 
@@ -732,7 +778,7 @@ export const LaporanUnitUsahaView: React.FC<LaporanUnitUsahaViewProps> = ({
               </span>
             ) : (
               <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-200 border border-amber-400/40">
-                Cadangan Lokal ({businessTransactions.length} Transaksi)
+                Belum Tersinkron ({businessTransactions.length} Transaksi)
               </span>
             )}
           </div>
@@ -754,13 +800,15 @@ export const LaporanUnitUsahaView: React.FC<LaporanUnitUsahaViewProps> = ({
 
         <div className="flex items-center gap-2">
           {activeUnitTab === 'semua' ? (
-            <button
-              onClick={handlePrintConsolidatedReport}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white text-blue-950 font-bold text-xs shadow-md hover:bg-slate-100 transition cursor-pointer"
-            >
-              <Printer className="w-4 h-4 text-blue-900" />
-              <span>Cetak Laporan Konsolidasi</span>
-            </button>
+            !isRestrictedUnitManager && (
+              <button
+                onClick={handlePrintConsolidatedReport}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white text-blue-950 font-bold text-xs shadow-md hover:bg-slate-100 transition cursor-pointer"
+              >
+                <Printer className="w-4 h-4 text-blue-900" />
+                <span>Cetak Laporan Konsolidasi</span>
+              </button>
+            )
           ) : (
             <button
               onClick={() => handlePrintSingleUnitReport(activeUnitTab)}
@@ -771,7 +819,7 @@ export const LaporanUnitUsahaView: React.FC<LaporanUnitUsahaViewProps> = ({
             </button>
           )}
 
-          {userRole === 'pengurus' && (
+          {canManageCurrentTab && (
             <button
               onClick={openAddModalForCurrentUnit}
               className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-md transition cursor-pointer"
@@ -785,20 +833,22 @@ export const LaporanUnitUsahaView: React.FC<LaporanUnitUsahaViewProps> = ({
 
       {/* SUB-MENU TABS: Pilihan Unit Usaha Terpisah */}
       <div className="flex flex-wrap items-center gap-2 p-1.5 bg-slate-200/70 rounded-2xl">
-        <button
-          type="button"
-          onClick={() => handleUnitTabChange('semua')}
-          className={`px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
-            activeUnitTab === 'semua'
-              ? 'bg-blue-950 text-white shadow-sm'
-              : 'text-slate-700 hover:text-slate-900 hover:bg-white/60'
-          }`}
-        >
-          <Layers className="w-4 h-4" />
-          <span>Konsolidasi Semua Unit</span>
-        </button>
+        {!isRestrictedUnitManager && (
+          <button
+            type="button"
+            onClick={() => handleUnitTabChange('semua')}
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
+              activeUnitTab === 'semua'
+                ? 'bg-blue-950 text-white shadow-sm'
+                : 'text-slate-700 hover:text-slate-900 hover:bg-white/60'
+            }`}
+          >
+            <Layers className="w-4 h-4" />
+            <span>Konsolidasi Semua Unit</span>
+          </button>
+        )}
 
-        {(Object.keys(BUSINESS_UNIT_CONFIGS) as BusinessUnitId[]).map((uId) => {
+        {visibleUnitIds.map((uId) => {
           const cfg = BUSINESS_UNIT_CONFIGS[uId];
           const Icon = cfg.icon;
           const isSelected = activeUnitTab === uId;
@@ -1101,7 +1151,7 @@ export const LaporanUnitUsahaView: React.FC<LaporanUnitUsahaViewProps> = ({
                   <th className="py-2.5 px-4">Deskripsi / Keterangan</th>
                   <th className="py-2.5 px-4 text-right">Nominal</th>
                   <th className="py-2.5 px-4">Petugas / Pengelola</th>
-                  {userRole === 'pengurus' && onDeleteTransaction && (
+                  {canManageCurrentTab && onDeleteTransaction && (
                     <th className="py-2.5 px-4 text-center">Aksi</th>
                   )}
                 </tr>
@@ -1150,7 +1200,7 @@ export const LaporanUnitUsahaView: React.FC<LaporanUnitUsahaViewProps> = ({
                         <td className="py-2.5 px-4 text-slate-600">
                           {tx.recordedBy || tx.createdBy || unitCfg?.pengelolaName}
                         </td>
-                        {userRole === 'pengurus' && onDeleteTransaction && (
+                        {canManageCurrentTab && onDeleteTransaction && canManageBusinessUnit(effectiveUser, txUnitKey) && (
                           <td className="py-2.5 px-4 text-center">
                             <button
                               onClick={() => onDeleteTransaction(tx.id)}

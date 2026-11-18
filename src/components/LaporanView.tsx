@@ -29,6 +29,7 @@ import {
 } from '../types';
 import { formatRupiah, formatDateIndo, formatDateTimeIndo } from '../utils/formatters';
 import { printHtmlContent } from '../utils/printHelper';
+import { isAnggotaUser } from '../utils/permissions';
 import { RekonsiliasiModal } from './RekonsiliasiModal';
 import { fetchLatestOpeningReconciliation } from '../services/reconciliationService';
 
@@ -67,7 +68,9 @@ export const LaporanView: React.FC<LaporanViewProps> = ({
   userRole = 'pengurus',
   currentUser,
 }) => {
-  const isAnggota = userRole === 'anggota' || currentUser?.role === 'anggota';
+  const isAnggota = isAnggotaUser(
+    currentUser || { id: '', username: '', name: '', role: userRole }
+  );
   const [filterType, setFilterType] = useState<'semua' | 'masuk' | 'keluar'>('semua');
   const [isAddExpenseModalOpen, setIsAddExpenseModalOpen] = useState(false);
   const [isReconModalOpen, setIsReconModalOpen] = useState(false);

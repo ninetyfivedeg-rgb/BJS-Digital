@@ -440,10 +440,12 @@ export function calculateLoanRemaining(loan: Loan): {
     }
   }
 
-  // Jika schedules kosong (misal data belum dimuat), gunakan formula tenor & suku bunga resmi
+  // Jika schedules kosong (misal data belum dimuat), gunakan formula tenor & suku bunga resmi 1.1%
   if (schedules.length === 0) {
-    const monthlyInterest = Math.round(pokokAwal * ((loan.interestRatePerMonth || 1.5) / 100));
-    totalBunga = monthlyInterest * (loan.tenorMonths || 10);
+    const rate = loan.interestRatePerMonth || 1.1;
+    const tenor = loan.tenorMonths || 12;
+    const monthlyInterest = Math.round(pokokAwal * (rate / 100));
+    totalBunga = monthlyInterest * tenor;
     remainingPrincipal = pokokAwal;
     remainingInterest = totalBunga;
     remainingTotal = remainingPrincipal + remainingInterest;
@@ -629,6 +631,21 @@ export function computeCooperativeSummary(
     activeMembersCount: membersCount.aktif,
     activeLoansCount,
   };
+}
+
+export function clearSensitiveLocalCaches(): void {
+  try {
+    if (typeof window === 'undefined') return;
+    localStorage.removeItem(KEYS.MEMBERS);
+    localStorage.removeItem(KEYS.SAVINGS);
+    localStorage.removeItem(KEYS.LOANS);
+    localStorage.removeItem(KEYS.REPAYMENTS);
+    localStorage.removeItem(KEYS.CASHFLOW);
+    localStorage.removeItem(KEYS.BUSINESS_UNITS);
+    localStorage.removeItem(KEYS.AUDIT_LOGS);
+  } catch (e) {
+    console.error('Failed to clear local caches', e);
+  }
 }
 
 export function resetToDemoData(): void {

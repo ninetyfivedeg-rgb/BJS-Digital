@@ -1,5 +1,7 @@
-import { AuthUser, Member, UserRole } from '../types';
+import { AuthUser, BusinessUnitId, Member, UserProfileRecord, UserRole } from '../types';
 import { supabase } from '../lib/supabase';
+import { isSuperAdmin, normalizeRole, ROLE_TO_MANAGED_UNIT } from './permissions';
+import { sanitizeUuid } from './storage';
 
 /**
  * Konversi nomor anggota atau username menjadi email internal Supabase Auth.
@@ -34,20 +36,25 @@ export async function fetchUserProfile(
     }
 
     if (profile) {
-      const rawRole = (profile.role || '').toLowerCase();
-      const role: UserRole = rawRole === 'pengurus' || rawRole === 'admin' ? 'pengurus' : 'anggota';
+      const role: UserRole = normalizeRole(profile.role);
+      const isActive = profile.is_active !== false;
       const memberId = profile.member_id || profile.memberId || defaultUsername || '';
       const name = profile.name || profile.full_name || profile.nama || memberId || 'Pengguna BJS';
       const unitKerja = profile.unit_kerja || profile.unitKerja || profile.job || undefined;
+      const managedUnit = (profile.managed_unit || ROLE_TO_MANAGED_UNIT[role] || null) as BusinessUnitId | null;
       const mustChangePassword = Boolean(profile.must_change_password ?? profile.mustChangePassword);
+
+      const emailUsername = fallbackEmail ? fallbackEmail.split('@')[0] : undefined;
 
       return {
         id: userId,
-        username: memberId || defaultUsername || (fallbackEmail ? fallbackEmail.split('@')[0] : 'bjs-user'),
+        username: memberId || defaultUsername || emailUsername || 'bjs-user',
         name,
         role,
         memberId: role === 'anggota' ? memberId : undefined,
         unitKerja,
+        managedUnit,
+        isActive,
         mustChangePassword,
         email: fallbackEmail,
       };
@@ -65,6 +72,8 @@ export async function fetchUserProfile(
       name: isPengurus ? 'Pengurus Koperasi BJS' : derivedUsername.toUpperCase(),
       role: isPengurus ? 'pengurus' : 'anggota',
       memberId: isPengurus ? undefined : derivedUsername.toUpperCase(),
+      managedUnit: null,
+      isActive: true,
       mustChangePassword: true,
       email: fallbackEmail,
     };
@@ -76,7 +85,7 @@ export async function fetchUserProfile(
 
 /**
  * Fungsi login utama menggunakan Supabase Auth (signInWithPassword).
- * Mendukung login Anggota (nomor registrasi BJS-xxx) dan Pengurus.
+ * Mendukung login Anggota (nomor registrasi BJS-xxx), Super Admin, Admin SP, dan Manajer Unit.
  */
 export async function authenticateUser(
   usernameInput: string,
@@ -107,7 +116,6 @@ export async function authenticateUser(
 
     if (error) {
       const msg = error.message.toLowerCase();
-      // Pesan human-friendly tanpa mengekspos detail teknis atau key
       if (
         msg.includes('invalid login credentials') ||
         msg.includes('invalid_grant') ||
@@ -135,7 +143,6 @@ export async function authenticateUser(
         };
       }
 
-      // Log aman untuk debugging tanpa membocorkan kredensial, token, atau key
       console.warn('Supabase Auth response details:', {
         status: error.status,
         name: error.name,
@@ -158,6 +165,13 @@ export async function authenticateUser(
     // Ambil profile dari database Supabase
     const userProfile = await fetchUserProfile(data.user.id, cleanUser, data.user.email);
     if (userProfile) {
+      if (userProfile.isActive === false) {
+        await supabase.auth.signOut();
+        return {
+          success: false,
+          error: 'Akun Anda sedang dinonaktifkan oleh Super Admin. Silakan hubungi pengurus koperasi.',
+        };
+      }
       return { success: true, user: userProfile };
     }
 
@@ -167,6 +181,8 @@ export async function authenticateUser(
       username: cleanUser,
       name: cleanUser,
       role: cleanUser.toLowerCase().includes('pengurus') ? 'pengurus' : 'anggota',
+      managedUnit: null,
+      isActive: true,
       mustChangePassword: true,
       email: data.user.email,
     };
@@ -197,7 +213,6 @@ export async function changeUserPassword(
   }
 
   try {
-    // 1. Verifikasi kecocokan kata sandi lama terlebih dahulu dengan login ulang internal
     const email = currentUser.email || mapUsernameToEmail(currentUser.username);
     const { error: verifyErr } = await supabase.auth.signInWithPassword({
       email,
@@ -211,7 +226,6 @@ export async function changeUserPassword(
       };
     }
 
-    // 2. Perbarui kata sandi baru menggunakan Supabase Auth
     const { error: updateErr } = await supabase.auth.updateUser({
       password: newPassword,
     });
@@ -223,7 +237,6 @@ export async function changeUserPassword(
       };
     }
 
-    // 3. Perbarui tabel profiles (set must_change_password = false)
     if (currentUser.id) {
       const { error: profileErr } = await supabase
         .from('profiles')
@@ -241,6 +254,158 @@ export async function changeUserPassword(
     return {
       success: false,
       error: 'Terjadi kesalahan saat memperbarui kata sandi. Silakan coba lagi.',
+    };
+  }
+}
+
+/**
+ * Mengambil seluruh profil pengguna untuk dikelola Super Admin.
+ */
+export async function fetchAllUserProfiles(
+  currentUser?: AuthUser | null
+): Promise<{ profiles: UserProfileRecord[]; error: string | null }> {
+  if (!isSuperAdmin(currentUser)) {
+    return {
+      profiles: [],
+      error: 'Akses ditolak: Hanya Super Admin yang dapat melihat daftar hak akses pengguna.',
+    };
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, role, member_id, name, unit_kerja, managed_unit, is_active, must_change_password, created_at, updated_at')
+      .order('role', { ascending: true })
+      .order('name', { ascending: true });
+
+    if (error) {
+      return { profiles: [], error: error.message };
+    }
+
+    const profiles: UserProfileRecord[] = (data || []).map((row: any) => ({
+      id: row.id,
+      role: normalizeRole(row.role),
+      memberId: row.member_id || null,
+      name: row.name || row.member_id || 'Pengguna BJS',
+      unitKerja: row.unit_kerja || null,
+      managedUnit: row.managed_unit || null,
+      isActive: row.is_active !== false,
+      mustChangePassword: Boolean(row.must_change_password),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+
+    return { profiles, error: null };
+  } catch (err: any) {
+    return { profiles: [], error: err.message || 'Gagal memuat profil pengguna.' };
+  }
+}
+
+/**
+ * Memperbarui role, unit kelola, nama, atau status aktif akun pada tabel `profiles` (khusus Super Admin).
+ */
+export async function updateUserProfileAssignment(
+  targetProfile: UserProfileRecord,
+  updates: {
+    name: string;
+    role: UserRole;
+    managedUnit: BusinessUnitId | null;
+    isActive: boolean;
+    mustChangePassword: boolean;
+    unitKerja?: string | null;
+  },
+  currentUser?: AuthUser | null
+): Promise<{ success: boolean; message: string; error?: string }> {
+  if (!isSuperAdmin(currentUser)) {
+    return {
+      success: false,
+      message: 'Akses ditolak: Hanya Super Admin yang berwenang mengubah role atau status akun.',
+      error: 'UNAUTHORIZED_ROLE',
+    };
+  }
+
+  // Cegah Super Admin menonaktifkan atau menurunkan role akunnya sendiri secara tidak sengaja
+  if (currentUser?.id === targetProfile.id) {
+    if (!updates.isActive) {
+      return {
+        success: false,
+        message: 'Tidak diperbolehkan menonaktifkan akun Super Admin yang sedang Anda gunakan.',
+        error: 'CANNOT_DEACTIVATE_SELF',
+      };
+    }
+    if (updates.role !== 'super_admin' && updates.role !== 'pengurus') {
+      return {
+        success: false,
+        message: 'Tidak diperbolehkan menurunkan role akun Super Admin yang sedang aktif.',
+        error: 'CANNOT_DEMOTE_SELF',
+      };
+    }
+  }
+
+  // Validasi keselarasan role <-> managedUnit untuk pengelola unit usaha
+  const expectedUnit = ROLE_TO_MANAGED_UNIT[updates.role] || null;
+  const finalManagedUnit = expectedUnit ?? (updates.role === 'super_admin' || updates.role === 'pengurus' || updates.role === 'admin_sp' || updates.role === 'anggota' ? null : updates.managedUnit);
+
+  try {
+    const payload = {
+      name: updates.name.trim() || targetProfile.name,
+      role: updates.role,
+      managed_unit: finalManagedUnit,
+      is_active: updates.isActive,
+      must_change_password: updates.mustChangePassword,
+      unit_kerja: updates.unitKerja !== undefined ? updates.unitKerja : targetProfile.unitKerja || null,
+    };
+
+    const { error } = await supabase
+      .from('profiles')
+      .update(payload)
+      .eq('id', targetProfile.id);
+
+    if (error) {
+      return {
+        success: false,
+        message: `Gagal memperbarui hak akses pengguna: ${error.message}`,
+        error: error.message,
+      };
+    }
+
+    try {
+      const validUserUuid = sanitizeUuid(currentUser?.id);
+      if (validUserUuid) {
+        await supabase.from('audit_logs').insert([
+          {
+            user_id: validUserUuid,
+            actor_name: currentUser?.name || currentUser?.username || 'Super Admin',
+            actor_role: currentUser?.role || 'super_admin',
+            action: 'UPDATE_USER_ROLE',
+            entity_type: 'profiles',
+            entity_id: targetProfile.id,
+            description: `Mengubah hak akses ${targetProfile.name} (${targetProfile.role} -> ${updates.role}, unit: ${finalManagedUnit || '-'}, aktif: ${updates.isActive})`,
+            old_data: {
+              name: targetProfile.name,
+              role: targetProfile.role,
+              managed_unit: targetProfile.managedUnit || null,
+              is_active: targetProfile.isActive,
+              must_change_password: targetProfile.mustChangePassword,
+            },
+            new_data: payload,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+      }
+    } catch (auditErr) {
+      console.warn('Gagal mencatat audit log perubahan role:', auditErr);
+    }
+
+    return {
+      success: true,
+      message: `Hak akses dan profil "${payload.name}" berhasil diperbarui.`,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      message: err.message || 'Kendala jaringan saat memperbarui profil.',
+      error: err.message,
     };
   }
 }

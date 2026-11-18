@@ -1,6 +1,7 @@
 import { supabase } from '../lib/supabase';
 import { CashFlowRecord, AuthUser } from '../types';
-import { loadCashFlow as loadLocalFallbackCashFlow, sanitizeUuid } from '../utils/storage';
+import { sanitizeUuid } from '../utils/storage';
+import { isSuperAdmin } from '../utils/permissions';
 import { formatRupiah } from '../utils/formatters';
 
 export interface CreateCashFlowInput {
@@ -71,67 +72,44 @@ export async function fetchCashFlowFromSupabase(): Promise<FetchCashFlowResponse
 
     if (error) {
       console.warn('Gagal memuat arus kas dari Supabase:', error.message);
-      const fallback = loadLocalFallbackCashFlow();
       return {
-        cashFlow: fallback,
-        error: 'Gagal mengambil data buku kas dari server. Menampilkan data cadangan lokal.',
+        cashFlow: [],
+        error: `Gagal mengambil data buku kas dari server: ${error.message}`,
         fromSupabase: false,
-        totalCount: fallback.length,
+        totalCount: 0,
       };
     }
 
-    if (data && Array.isArray(data)) {
-      const mapped = data.map(mapSupabaseCashFlowToCashFlow);
-      return {
-        cashFlow: mapped,
-        error: null,
-        fromSupabase: true,
-        totalCount: mapped.length,
-      };
-    }
-
-    const fallback = loadLocalFallbackCashFlow();
+    const mapped = (data || []).map(mapSupabaseCashFlowToCashFlow);
     return {
-      cashFlow: fallback,
+      cashFlow: mapped,
       error: null,
-      fromSupabase: false,
-      totalCount: fallback.length,
+      fromSupabase: true,
+      totalCount: mapped.length,
     };
   } catch (err: any) {
     console.error('Terjadi pengecualian saat memuat buku kas dari Supabase:', err);
-    const fallback = loadLocalFallbackCashFlow();
     return {
-      cashFlow: fallback,
-      error: 'Terjadi kendala jaringan saat memuat buku kas. Menampilkan data cadangan lokal.',
+      cashFlow: [],
+      error: 'Terjadi kendala jaringan saat memuat buku kas.',
       fromSupabase: false,
-      totalCount: fallback.length,
+      totalCount: 0,
     };
   }
 }
 
 /**
  * Mencatat transaksi mutasi kas baru ke tabel Supabase `cash_flow_records`.
- *
- * VALIDASI KETAT & ATURAN KEAMANAN:
- * - Hanya role 'pengurus' yang diizinkan melakukan write. Anggota read-only.
- * - Tanggal transaksi harus valid.
- * - Tipe arus kas harus 'masuk' atau 'keluar'.
- * - Nominal harus angka valid > 0.
- * - Uraian / keterangan wajib diisi.
- * - Pemisahan kas fisik ('kas_koperasi') vs kas bank ('kas_bank') dijaga ketat.
- * - Kategori 'saldo_awal' dilarang dibuat melalui form ini (harus lewat Rekonsiliasi).
- * - Tidak menulis data baru ke localStorage.
- * - Mencatat jejak audit ke tabel `audit_logs`.
  */
 export async function createCashFlowRecord(
   input: CreateCashFlowInput,
   currentUser?: AuthUser | null
 ): Promise<CreateCashFlowActionResult> {
-  // 1. Role Guard: Hanya pengurus yang berhak mencatat mutasi kas
-  if (!currentUser || currentUser.role !== 'pengurus') {
+  // 1. Role Guard: Hanya Super Admin yang berhak mencatat mutasi kas utama koperasi
+  if (!isSuperAdmin(currentUser)) {
     return {
       success: false,
-      message: 'Akses ditolak: Hanya Pengurus/Bendahara yang memiliki wewenang untuk mencatat mutasi kas.',
+      message: 'Akses ditolak: Hanya Super Admin / Bendahara yang memiliki wewenang untuk mencatat mutasi kas utama.',
       error: 'UNAUTHORIZED_ROLE',
     };
   }
@@ -248,19 +226,21 @@ export async function createCashFlowRecord(
     const accountLabel = targetAccount === 'kas_bank' ? 'Kas di Bank' : 'Kas Tunai Fisik';
     const typeLabel = input.type === 'masuk' ? 'Pemasukan' : 'Pengeluaran';
     try {
-      const validUserUuid = sanitizeUuid(currentUser.id);
-      const auditPayload = {
-        user_id: validUserUuid || undefined,
-        actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
-        actor_role: currentUser.role || 'pengurus',
-        action: 'CREATE_CASH_FLOW',
-        entity_type: 'cash_flow_records',
-        entity_id: generatedId,
-        description: `Mencatat ${typeLabel} (${accountLabel}) sebesar ${formatRupiah(amount)} - ${cleanDescription}`,
-        new_data: insertPayload,
-        created_at: new Date().toISOString(),
-      };
-      await supabase.from('audit_logs').insert([auditPayload]);
+      const validUserUuid = sanitizeUuid(currentUser?.id);
+      if (validUserUuid) {
+        const auditPayload = {
+          user_id: validUserUuid,
+          actor_name: currentUser?.name || currentUser?.username || 'Super Admin',
+          actor_role: currentUser?.role || 'super_admin',
+          action: 'CREATE_CASH_FLOW',
+          entity_type: 'cash_flow_records',
+          entity_id: generatedId,
+          description: `Mencatat ${typeLabel} (${accountLabel}) sebesar ${formatRupiah(amount)} - ${cleanDescription}`,
+          new_data: insertPayload,
+          created_at: new Date().toISOString(),
+        };
+        await supabase.from('audit_logs').insert([auditPayload]);
+      }
     } catch (auditErr) {
       console.warn('Gagal mencatat audit log mutasi kas:', auditErr);
     }
@@ -290,10 +270,10 @@ export async function deleteCashFlowRecord(
   id: string,
   currentUser?: AuthUser | null
 ): Promise<{ success: boolean; message: string; error?: string }> {
-  if (!currentUser || currentUser.role !== 'pengurus') {
+  if (!isSuperAdmin(currentUser)) {
     return {
       success: false,
-      message: 'Akses ditolak: Hanya Pengurus yang memiliki wewenang untuk menghapus mutasi kas.',
+      message: 'Akses ditolak: Hanya Super Admin yang memiliki wewenang untuk menghapus mutasi kas utama.',
       error: 'UNAUTHORIZED_ROLE',
     };
   }
@@ -335,19 +315,21 @@ export async function deleteCashFlowRecord(
     }
 
     try {
-      const validUserUuid = sanitizeUuid(currentUser.id);
-      const auditPayload = {
-        user_id: validUserUuid || undefined,
-        actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
-        actor_role: currentUser.role || 'pengurus',
-        action: 'DELETE_CASH_FLOW',
-        entity_type: 'cash_flow_records',
-        entity_id: id,
-        description: `Menghapus mutasi kas ${id} (${formatRupiah(existing.amount)}) - ${existing.description}`,
-        new_data: { deletedRecord: existing },
-        created_at: new Date().toISOString(),
-      };
-      await supabase.from('audit_logs').insert([auditPayload]);
+      const validUserUuid = sanitizeUuid(currentUser?.id);
+      if (validUserUuid) {
+        const auditPayload = {
+          user_id: validUserUuid,
+          actor_name: currentUser?.name || currentUser?.username || 'Super Admin',
+          actor_role: currentUser?.role || 'super_admin',
+          action: 'DELETE_CASH_FLOW',
+          entity_type: 'cash_flow_records',
+          entity_id: id,
+          description: `Menghapus mutasi kas ${id} (${formatRupiah(existing.amount)}) - ${existing.description}`,
+          new_data: { deletedRecord: existing },
+          created_at: new Date().toISOString(),
+        };
+        await supabase.from('audit_logs').insert([auditPayload]);
+      }
     } catch {}
 
     return {

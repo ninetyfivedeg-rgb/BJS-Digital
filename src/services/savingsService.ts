@@ -1,6 +1,7 @@
 import { supabase } from '../lib/supabase';
 import { Member, SavingsTransaction, SavingsType, SavingsTransactionType, AuthUser } from '../types';
-import { loadSavings as loadLocalFallbackSavings, deleteLocalSavings, saveSavings, sanitizeUuid } from '../utils/storage';
+import { sanitizeUuid } from '../utils/storage';
+import { isSimpanPinjamOfficer } from '../utils/permissions';
 import { formatRupiah } from '../utils/formatters';
 
 /**
@@ -96,14 +97,10 @@ export interface FetchSavingsResponse {
 }
 
 /**
- * Mengambil data seluruh transaksi simpanan dari tabel Supabase `savings_transactions`.
- *
- * Menggabungkan data dari Supabase dengan data historis cadangan (428 baris)
- * dengan deduplikasi ID agar data historis tetap utuh dan data baru langsung terbaca.
+ * Mengambil data transaksi simpanan dari tabel Supabase `savings_transactions`
+ * tanpa mencampur data dummy atau cadangan localStorage.
  */
 export async function fetchSavingsFromSupabase(members?: Member[]): Promise<FetchSavingsResponse> {
-  const fallbackList = loadLocalFallbackSavings();
-
   try {
     const { data, error } = await supabase
       .from('savings_transactions')
@@ -113,73 +110,33 @@ export async function fetchSavingsFromSupabase(members?: Member[]): Promise<Fetc
     if (error) {
       console.warn('Gagal memuat data transaksi simpanan dari Supabase:', error.message);
       return {
-        savings: fallbackList,
-        error: 'Gagal mengambil data transaksi simpanan dari server. Menampilkan data cadangan lokal.',
+        savings: [],
+        error: `Gagal mengambil data transaksi simpanan dari server: ${error.message}`,
         fromSupabase: false,
-        totalCount: fallbackList.length,
+        totalCount: 0,
       };
     }
 
-    if (data && Array.isArray(data) && data.length > 0) {
-      const mapped = data.map((row) => mapSupabaseSavingsToSavings(row, members));
-      
-      // Jika Supabase sudah memuat data penuh (>= 200 baris), Supabase adalah Single Source of Truth mutlak
-      if (mapped.length >= 200) {
-        saveSavings(mapped);
-        return {
-          savings: mapped,
-          error: null,
-          fromSupabase: true,
-          totalCount: mapped.length,
-        };
-      }
-
-      // Jika Supabase baru berisi data parsial, gabungkan hanya baris historis simpanan pokok/wajib lama
-      // JANGAN pernah memasukkan kembali simpanan berjangka atau transaksi yang telah dihapus
-      const existingIds = new Set(mapped.map((s) => s.id));
-      const supplementalHistorical = fallbackList.filter(
-        (s) => !existingIds.has(s.id) && s.type !== 'berjangka' && !s.id.startsWith('SMP-BJK-')
-      );
-
-      const combined = [...mapped, ...supplementalHistorical];
-      saveSavings(combined);
-      return {
-        savings: combined,
-        error: null,
-        fromSupabase: true,
-        totalCount: combined.length,
-      };
-    }
-
-    // Jika data Supabase kosong (belum ada transaksi baru yang dimasukkan), gunakan data historis
+    const mapped = (data || []).map((row) => mapSupabaseSavingsToSavings(row, members));
     return {
-      savings: fallbackList,
+      savings: mapped,
       error: null,
-      fromSupabase: false,
-      totalCount: fallbackList.length,
+      fromSupabase: true,
+      totalCount: mapped.length,
     };
   } catch (err: any) {
     console.error('Terjadi pengecualian saat memuat data simpanan dari Supabase:', err);
     return {
-      savings: fallbackList,
-      error: 'Terjadi kendala jaringan saat memuat transaksi simpanan. Menampilkan data cadangan lokal.',
+      savings: [],
+      error: 'Terjadi kendala jaringan saat memuat transaksi simpanan.',
       fromSupabase: false,
-      totalCount: fallbackList.length,
+      totalCount: 0,
     };
   }
 }
 
 /**
  * Mencatat transaksi simpanan baru ke tabel Supabase `savings_transactions`.
- *
- * VALIDASI KETAT & ATURAN KEAMANAN:
- * - Hanya role 'pengurus' yang diizinkan melakukan write.
- * - ID Anggota harus valid dan ada dalam daftar anggota.
- * - Jenis simpanan harus 'pokok', 'wajib', atau 'berjangka'.
- * - Nominal harus angka valid > 0 (bukan NaN/Infinity).
- * - Tanggal transaksi harus valid.
- * - Mengembalikan data hasil insert langsung dari Supabase sebagai single source of truth.
- * - Tidak menulis transaksi baru ke localStorage.
  */
 export async function createSavingsTransaction(
   input: CreateSavingsTransactionInput,
@@ -187,10 +144,10 @@ export async function createSavingsTransaction(
   validMembers?: Member[]
 ): Promise<CreateSavingsActionResult> {
   // 1. Role Guard
-  if (!currentUser || currentUser.role !== 'pengurus') {
+  if (!isSimpanPinjamOfficer(currentUser)) {
     return {
       success: false,
-      message: 'Akses ditolak: Hanya Pengurus/Bendahara yang memiliki wewenang untuk mencatat transaksi simpanan.',
+      message: 'Akses ditolak: Hanya Super Admin atau Admin Simpan Pinjam yang memiliki wewenang mencatat simpanan.',
       error: 'UNAUTHORIZED_ROLE',
     };
   }
@@ -309,7 +266,7 @@ export async function createSavingsTransaction(
     tx_type: txType,
     amount: amount,
     transaction_date: cleanDate,
-    admin_name: input.adminName?.trim() || currentUser.name || currentUser.username || 'Admin Bendahara BJS',
+    admin_name: input.adminName?.trim() || currentUser?.name || currentUser?.username || 'Admin Bendahara BJS',
     term_months: termMonths,
     annual_interest_rate: annualInterestRate,
     maturity_date: maturityDate,
@@ -341,19 +298,21 @@ export async function createSavingsTransaction(
 
     // 11. Catat ke audit_logs
     try {
-      const validUserUuid = sanitizeUuid(currentUser.id);
-      const auditPayload = {
-        user_id: validUserUuid || undefined,
-        actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
-        actor_role: currentUser.role || 'pengurus',
-        action: 'CREATE_SAVINGS_TRANSACTION',
-        entity_type: 'savings_transactions',
-        entity_id: insertedTx.id,
-        description: `Mencatat ${txType === 'setor' ? 'Setoran' : 'Penarikan'} Simpanan ${input.type.toUpperCase()} sebesar ${formatRupiah(amount)} untuk ${cleanMemberName} (${cleanMemberId})`,
-        new_data: insertPayload,
-        created_at: new Date().toISOString(),
-      };
-      await supabase.from('audit_logs').insert([auditPayload]);
+      const validUserUuid = sanitizeUuid(currentUser?.id);
+      if (validUserUuid) {
+        const auditPayload = {
+          user_id: validUserUuid,
+          actor_name: currentUser?.name || currentUser?.username || 'Admin SP',
+          actor_role: currentUser?.role || 'admin_sp',
+          action: 'CREATE_SAVINGS_TRANSACTION',
+          entity_type: 'savings_transactions',
+          entity_id: insertedTx.id,
+          description: `Mencatat ${txType === 'setor' ? 'Setoran' : 'Penarikan'} Simpanan ${input.type.toUpperCase()} sebesar ${formatRupiah(amount)} untuk ${cleanMemberName} (${cleanMemberId})`,
+          new_data: insertPayload,
+          created_at: new Date().toISOString(),
+        };
+        await supabase.from('audit_logs').insert([auditPayload]);
+      }
     } catch (auditErr) {
       console.warn('Gagal mencatat audit log transaksi simpanan:', auditErr);
     }
@@ -383,10 +342,10 @@ export async function createBatchSavingsTransactions(
   validMembers?: Member[]
 ): Promise<CreateBatchSavingsActionResult> {
   // 1. Role Guard
-  if (!currentUser || currentUser.role !== 'pengurus') {
+  if (!isSimpanPinjamOfficer(currentUser)) {
     return {
       success: false,
-      message: 'Akses ditolak: Hanya Pengurus/Bendahara yang memiliki wewenang untuk mencatat transaksi simpanan.',
+      message: 'Akses ditolak: Hanya Super Admin atau Admin Simpan Pinjam yang memiliki wewenang untuk mencatat transaksi simpanan.',
       error: 'UNAUTHORIZED_ROLE',
     };
   }
@@ -488,7 +447,7 @@ export async function createBatchSavingsTransactions(
       tx_type: input.txType || 'setor',
       amount: amount,
       transaction_date: cleanDate,
-      admin_name: input.adminName?.trim() || currentUser.name || currentUser.username || 'Admin Bendahara BJS',
+      admin_name: input.adminName?.trim() || currentUser?.name || currentUser?.username || 'Admin Bendahara BJS',
       term_months: null,
       annual_interest_rate: null,
       maturity_date: null,
@@ -522,19 +481,21 @@ export async function createBatchSavingsTransactions(
 
     // 4. Catat audit log batch
     try {
-      const validUserUuid = sanitizeUuid(currentUser.id);
-      const auditPayload = {
-        user_id: validUserUuid || undefined,
-        actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
-        actor_role: currentUser.role || 'pengurus',
-        action: 'CREATE_SAVINGS_TRANSACTION',
-        entity_type: 'savings_transactions',
-        entity_id: `BATCH-${payloads.length}-MEMBERS`,
-        description: `Mencatat setoran kolektif Simpanan Wajib untuk ${payloads.length} anggota dengan total nominal ${formatRupiah(totalBatchAmount)}`,
-        new_data: { count: payloads.length, totalAmount: totalBatchAmount },
-        created_at: new Date().toISOString(),
-      };
-      await supabase.from('audit_logs').insert([auditPayload]);
+      const validUserUuid = sanitizeUuid(currentUser?.id);
+      if (validUserUuid) {
+        const auditPayload = {
+          user_id: validUserUuid,
+          actor_name: currentUser?.name || currentUser?.username || 'Admin SP',
+          actor_role: currentUser?.role || 'admin_sp',
+          action: 'CREATE_SAVINGS_TRANSACTION',
+          entity_type: 'savings_transactions',
+          entity_id: `BATCH-${payloads.length}-MEMBERS`,
+          description: `Mencatat setoran kolektif Simpanan Wajib untuk ${payloads.length} anggota dengan total nominal ${formatRupiah(totalBatchAmount)}`,
+          new_data: { count: payloads.length, totalAmount: totalBatchAmount },
+          created_at: new Date().toISOString(),
+        };
+        await supabase.from('audit_logs').insert([auditPayload]);
+      }
     } catch (auditErr) {
       console.warn('Gagal mencatat audit log batch simpanan:', auditErr);
     }
@@ -561,10 +522,10 @@ export async function deleteSavingsTransaction(
   id: string,
   currentUser?: AuthUser | null
 ): Promise<{ success: boolean; message: string; error?: string }> {
-  if (!currentUser || currentUser.role !== 'pengurus') {
+  if (!isSimpanPinjamOfficer(currentUser)) {
     return {
       success: false,
-      message: 'Akses ditolak: Hanya Pengurus yang dapat menghapus transaksi simpanan.',
+      message: 'Akses ditolak: Hanya Super Admin atau Admin Simpan Pinjam yang dapat menghapus transaksi simpanan.',
       error: 'UNAUTHORIZED_ROLE',
     };
   }
@@ -593,24 +554,23 @@ export async function deleteSavingsTransaction(
       };
     }
 
-    // Bersihkan juga cache lokal agar tidak terjadi resureksi antar-perangkat
-    deleteLocalSavings(id);
-
     // Catat ke audit_logs
     try {
-      const validUserUuid = sanitizeUuid(currentUser.id);
-      const auditPayload = {
-        user_id: validUserUuid || undefined,
-        actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
-        actor_role: currentUser.role || 'pengurus',
-        action: 'DELETE_SAVINGS_TRANSACTION',
-        entity_type: 'savings_transactions',
-        entity_id: id,
-        description: `Menghapus transaksi simpanan ID: ${id} (${existing ? `${existing.type} - ${formatRupiah(existing.amount)}` : ''})`,
-        old_data: existing || null,
-        created_at: new Date().toISOString(),
-      };
-      await supabase.from('audit_logs').insert([auditPayload]);
+      const validUserUuid = sanitizeUuid(currentUser?.id);
+      if (validUserUuid) {
+        const auditPayload = {
+          user_id: validUserUuid,
+          actor_name: currentUser?.name || currentUser?.username || 'Admin SP',
+          actor_role: currentUser?.role || 'admin_sp',
+          action: 'DELETE_SAVINGS_TRANSACTION',
+          entity_type: 'savings_transactions',
+          entity_id: id,
+          description: `Menghapus transaksi simpanan ID: ${id} (${existing ? `${existing.type} - ${formatRupiah(existing.amount)}` : ''})`,
+          old_data: existing || null,
+          created_at: new Date().toISOString(),
+        };
+        await supabase.from('audit_logs').insert([auditPayload]);
+      }
     } catch {}
 
     return {
@@ -634,10 +594,10 @@ export async function completeBerjangkaTransaction(
   id: string,
   currentUser?: AuthUser | null
 ): Promise<{ success: boolean; message: string; error?: string }> {
-  if (!currentUser || currentUser.role !== 'pengurus') {
+  if (!isSimpanPinjamOfficer(currentUser)) {
     return {
       success: false,
-      message: 'Akses ditolak: Hanya Pengurus yang dapat mencairkan simpanan berjangka.',
+      message: 'Akses ditolak: Hanya Super Admin atau Admin Simpan Pinjam yang dapat mencairkan simpanan berjangka.',
       error: 'UNAUTHORIZED_ROLE',
     };
   }
@@ -700,19 +660,21 @@ export async function completeBerjangkaTransaction(
     }
 
     try {
-      const validUserUuid = sanitizeUuid(currentUser.id);
-      const auditPayload = {
-        user_id: validUserUuid || undefined,
-        actor_name: currentUser.name || currentUser.username || 'Pengurus BJS',
-        actor_role: currentUser.role || 'pengurus',
-        action: 'COMPLETE_BERJANGKA',
-        entity_type: 'savings_transactions',
-        entity_id: id,
-        description: `Pencairan dan penyelesaian Simpanan Berjangka ${id} sebesar ${formatRupiah(amount)} bunga ${formatRupiah(interest)} untuk ${memberName}`,
-        new_data: updatedTx,
-        created_at: new Date().toISOString(),
-      };
-      await supabase.from('audit_logs').insert([auditPayload]);
+      const validUserUuid = sanitizeUuid(currentUser?.id);
+      if (validUserUuid) {
+        const auditPayload = {
+          user_id: validUserUuid,
+          actor_name: currentUser?.name || currentUser?.username || 'Admin SP',
+          actor_role: currentUser?.role || 'admin_sp',
+          action: 'COMPLETE_BERJANGKA',
+          entity_type: 'savings_transactions',
+          entity_id: id,
+          description: `Pencairan dan penyelesaian Simpanan Berjangka ${id} sebesar ${formatRupiah(amount)} bunga ${formatRupiah(interest)} untuk ${memberName}`,
+          new_data: updatedTx,
+          created_at: new Date().toISOString(),
+        };
+        await supabase.from('audit_logs').insert([auditPayload]);
+      }
     } catch {}
 
     return {

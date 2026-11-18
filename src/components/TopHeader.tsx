@@ -2,7 +2,8 @@ import React from 'react';
 import { Menu, Calendar, ShieldCheck, User, KeyRound, LogOut } from 'lucide-react';
 import { formatDateIndo } from '../utils/formatters';
 import { NavTab } from './Sidebar';
-import { AuthUser, UserRole } from '../types';
+import { AuthUser } from '../types';
+import { getRoleDisplayLabel, isAnggotaUser } from '../utils/permissions';
 
 interface TopHeaderProps {
   activeTab: NavTab;
@@ -38,6 +39,10 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
       title: 'Pinjaman & Angsuran',
       subtitle: 'Plafon, Bunga Flat 1,1%/Bulan & Jadwal Amortisasi',
     },
+    laporan_usp: {
+      title: 'Laporan Unit Simpan Pinjam',
+      subtitle: 'Rekapitulasi Simpanan, Pinjaman, Top Up & Kas Operasional SP',
+    },
     unit_usaha: {
       title: 'Laporan Unit Usaha',
       subtitle: 'Penjualan Alat Kebakaran, Isi Ulang APAR, Sembako & Atribut',
@@ -57,6 +62,10 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
     audit_log: {
       title: 'Audit Log & Rekam Jejak',
       subtitle: 'Log Transparansi, Keamanan & Rekam Aktivitas Sistem',
+    },
+    manajemen_user: {
+      title: 'Manajemen User & Role',
+      subtitle: 'Pengaturan Hak Akses Pengurus, Admin SP & Pengelola Unit Usaha',
     },
   };
 
@@ -105,19 +114,19 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
               <div className="flex items-center justify-end gap-1 text-[10px] text-slate-500">
                 <span className="font-mono">{currentUser.username}</span>
                 <span>&bull;</span>
-                <span className="capitalize font-semibold text-blue-900">{currentUser.role}</span>
+                <span className="font-semibold text-blue-900">{getRoleDisplayLabel(currentUser)}</span>
               </div>
             </div>
 
             <div
               className={`w-8 h-8 rounded-xl flex items-center justify-center text-white shadow-xs ${
-                currentUser.role === 'pengurus'
+                !isAnggotaUser(currentUser)
                   ? 'bg-gradient-to-br from-blue-900 to-indigo-900'
                   : 'bg-gradient-to-br from-emerald-700 to-teal-800'
               }`}
-              title={`${currentUser.name} (${currentUser.role})`}
+              title={`${currentUser.name} (${getRoleDisplayLabel(currentUser)})`}
             >
-              {currentUser.role === 'pengurus' ? (
+              {!isAnggotaUser(currentUser) ? (
                 <ShieldCheck className="w-4 h-4" />
               ) : (
                 <User className="w-4 h-4" />

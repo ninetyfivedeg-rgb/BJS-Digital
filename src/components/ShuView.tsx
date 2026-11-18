@@ -35,6 +35,7 @@ import { formatRupiah, formatNumber, formatDateIndo } from '../utils/formatters'
 import { printHtmlContent } from '../utils/printHelper';
 import { calculateMemberSavings } from '../utils/storage';
 import { calculateCooperativeShu, calculateMembersShuDetails } from '../services/shuService';
+import { isAnggotaUser, isSuperAdmin } from '../utils/permissions';
 
 interface ShuViewProps {
   members: Member[];
@@ -89,7 +90,14 @@ export const ShuView: React.FC<ShuViewProps> = ({
   summary,
   isFromSupabase = false,
 }) => {
-  const isAnggota = userRole === 'anggota' || currentUser?.role === 'anggota';
+  const effectiveUser: AuthUser | null = currentUser || {
+    id: '',
+    username: '',
+    name: '',
+    role: userRole,
+  };
+  const isAnggota = isAnggotaUser(effectiveUser);
+  const canEditShu = isSuperAdmin(effectiveUser);
   const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear());
   const [searchMember, setSearchMember] = useState<string>('');
   const [filterStatus, setFilterStatus] = useState<'semua' | 'aktif' | 'pasif'>('semua');
@@ -699,7 +707,7 @@ export const ShuView: React.FC<ShuViewProps> = ({
             <span>Ekspor Excel</span>
           </button>
 
-          {userRole === 'pengurus' && (
+          {canEditShu && (
             <button
               onClick={handleResetToDefault}
               className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-blue-200 hover:text-white transition cursor-pointer"
@@ -846,9 +854,9 @@ export const ShuView: React.FC<ShuViewProps> = ({
                 Formula: Sisa Laba (d = b - c) &bull; Biaya Operasional (e = d &times; 2.5%) &bull; Untuk SHU (f = d - e)
               </p>
             </div>
-            {userRole === 'pengurus' && (
+            {canEditShu && (
               <span className="text-[11px] text-blue-900 bg-blue-50 border border-blue-200 px-2.5 py-1 rounded-lg font-semibold">
-                Mode Edit Pengurus Aktif: Klik angka untuk menyesuaikan
+                Mode Edit Super Admin Aktif: Klik angka untuk menyesuaikan
               </span>
             )}
           </div>
@@ -872,7 +880,7 @@ export const ShuView: React.FC<ShuViewProps> = ({
                   <tr key={item.id} className="hover:bg-slate-50/80 transition">
                     <td className="py-3.5 px-4 font-bold text-slate-900">{item.name}</td>
                     <td className="py-3.5 px-4 text-right font-mono">
-                      {userRole === 'pengurus' ? (
+                      {canEditShu ? (
                         <input
                           type="number"
                           step={500000}
@@ -885,7 +893,7 @@ export const ShuView: React.FC<ShuViewProps> = ({
                       )}
                     </td>
                     <td className="py-3.5 px-4 text-right font-mono">
-                      {userRole === 'pengurus' ? (
+                      {canEditShu ? (
                         <input
                           type="number"
                           step={500000}
@@ -907,7 +915,7 @@ export const ShuView: React.FC<ShuViewProps> = ({
                       {formatRupiah(item.untukShu)}
                     </td>
                     <td className="py-3.5 px-4 text-center font-semibold">
-                      {userRole === 'pengurus' ? (
+                      {canEditShu ? (
                         <input
                           type="number"
                           min={0}
@@ -987,7 +995,7 @@ export const ShuView: React.FC<ShuViewProps> = ({
                     <tr key={r.id} className="hover:bg-slate-50/70 transition">
                       <td className="py-2.5 px-3 font-medium text-slate-800">{r.uraian}</td>
                       <td className="py-2.5 px-3 text-right font-mono">
-                        {userRole === 'pengurus' ? (
+                        {canEditShu ? (
                           <input
                             type="number"
                             step={10000}
@@ -1000,7 +1008,7 @@ export const ShuView: React.FC<ShuViewProps> = ({
                         )}
                       </td>
                       <td className="py-2.5 px-3 text-center">
-                        {userRole === 'pengurus' ? (
+                        {canEditShu ? (
                           <input
                             type="number"
                             min={1}
@@ -1087,7 +1095,7 @@ export const ShuView: React.FC<ShuViewProps> = ({
                           )}
                         </td>
                         <td className="py-3 px-4 text-center">
-                          {userRole === 'pengurus' ? (
+                          {canEditShu ? (
                             <div className="inline-flex items-center gap-1">
                               <input
                                 type="number"

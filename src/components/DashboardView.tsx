@@ -40,6 +40,7 @@ import { formatRupiah, formatDateIndo } from '../utils/formatters';
 import { calculateBusinessUnitReports, calculateMemberSavings, calculateLoanRemaining } from '../utils/storage';
 import { NavTab } from './Sidebar';
 import { AuthUser } from '../types';
+import { isAnggotaUser, isSuperAdmin } from '../utils/permissions';
 
 interface DashboardViewProps {
   summary: CooperativeSummary;
@@ -88,7 +89,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   isFromSupabase = false,
   onRefresh,
 }) => {
-  const isAnggota = userRole === 'anggota' || currentUser?.role === 'anggota';
+  const effectiveUser: AuthUser | null = currentUser || {
+    id: '',
+    username: '',
+    name: '',
+    role: userRole,
+  };
+  const isAnggota = isAnggotaUser(effectiveUser);
+  const isFullAdmin = isSuperAdmin(effectiveUser);
   const myMemberId = (currentUser?.memberId || (isAnggota ? currentUser?.username : undefined) || 'BJS-001').trim();
   const myMember: Member = members.find((m) => m.id.toLowerCase() === myMemberId.toLowerCase()) || {
     id: myMemberId,
@@ -558,7 +566,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </span>
             ) : (
               <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-200 border border-amber-400/40">
-                Cadangan Lokal
+                Belum Tersinkron
               </span>
             )}
           </div>
@@ -567,8 +575,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </h2>
         </div>
 
-        {/* Action Shortcuts (Only for Pengurus) */}
-        {userRole === 'pengurus' ? (
+        {/* Action Shortcuts (Only for Super Admin) */}
+        {isFullAdmin ? (
           <div className="relative z-10 flex flex-wrap gap-2 shrink-0">
             <button
               onClick={onOpenNewMember}
@@ -651,7 +659,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </p>
           </div>
         </div>
-        {userRole === 'pengurus' && (
+        {isFullAdmin && (
           <button
             onClick={() => onNavigate('laporan')}
             className="px-3.5 py-1.5 rounded-xl bg-blue-950 hover:bg-blue-900 text-white font-bold text-xs transition cursor-pointer shrink-0 shadow-xs flex items-center gap-1.5"
@@ -987,7 +995,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         {formatRupiah(item.amount)}
                       </td>
                       <td className="py-3 text-right">
-                        {userRole === 'pengurus' ? (
+                        {isFullAdmin ? (
                           <button
                             onClick={() => onOpenRepayment(item.loanId)}
                             className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-blue-900 hover:bg-blue-950 text-white text-xs font-bold transition cursor-pointer shadow-xs"

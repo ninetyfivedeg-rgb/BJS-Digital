@@ -41,12 +41,28 @@ import { formatRupiah, formatDateIndo, formatDateTimeIndo } from '../utils/forma
 import { calculateLoanRemaining } from '../utils/storage';
 import { ReceiptData } from './ReceiptModal';
 import { printHtmlContent } from '../utils/printHelper';
+import {
+  calculateTopUpPreview,
+  CreateTopUpLoanActionResult,
+  CreateTopUpLoanInput,
+} from '../services/loanService';
+import {
+  isAnggotaUser,
+  isSimpanPinjamOfficer,
+  isSuperAdmin,
+} from '../utils/permissions';
 
 interface PinjamanViewProps {
   members: Member[];
   loans: Loan[];
   repayments: LoanRepayment[];
-  onAddLoan: (loan: Omit<Loan, 'id' | 'monthlyPrincipal' | 'monthlyInterest' | 'monthlyTotal' | 'totalLoanAmount' | 'schedules'>) => void;
+  onAddLoan: (
+    loan: Omit<Loan, 'id' | 'monthlyPrincipal' | 'monthlyInterest' | 'monthlyTotal' | 'totalLoanAmount' | 'schedules'>
+  ) => Promise<{ success: boolean; message: string; data?: Loan; error?: string } | undefined> | void;
+  onCreateTopUpLoan?: (
+    input: CreateTopUpLoanInput,
+    parentLoan?: Loan
+  ) => Promise<CreateTopUpLoanActionResult | undefined>;
   onApproveLoan: (loanId: string) => void;
   onRejectLoan: (loanId: string) => void;
   onPayInstallment: (payment: {
@@ -66,8 +82,10 @@ interface PinjamanViewProps {
   userRole?: UserRole;
   currentUser?: AuthUser | null;
   spCashMutations?: SimpanPinjamCashMutation[];
-  onAddSpCashMutation?: (mutation: Omit<SimpanPinjamCashMutation, 'id' | 'createdAt'>) => void;
-  onDeleteSpCashMutation?: (id: string) => void;
+  onAddSpCashMutation?: (mutation: Omit<SimpanPinjamCashMutation, 'id' | 'createdAt'>) => Promise<void> | void;
+  onDeleteSpCashMutation?: (id: string) => Promise<void> | void;
+  onMigrateLocalSpCash?: () => Promise<void>;
+  hasLocalUnsyncedSpCash?: boolean;
   activeSubTab?: 'daftar_pinjaman' | 'kas_unit_sp';
   setActiveSubTab?: (tab: 'daftar_pinjaman' | 'kas_unit_sp') => void;
   isLoading?: boolean;
@@ -81,6 +99,7 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
   loans,
   repayments,
   onAddLoan,
+  onCreateTopUpLoan,
   onApproveLoan,
   onRejectLoan,
   onPayInstallment,
@@ -96,6 +115,8 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
   spCashMutations = [],
   onAddSpCashMutation,
   onDeleteSpCashMutation,
+  onMigrateLocalSpCash,
+  hasLocalUnsyncedSpCash = false,
   activeSubTab: controlledSubTab,
   setActiveSubTab: setControlledSubTab,
   isLoading = false,
@@ -103,7 +124,16 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
   isFromSupabase = false,
   onRefresh,
 }) => {
-  const isAnggota = userRole === 'anggota' || currentUser?.role === 'anggota';
+  const effectiveUser: AuthUser | null = currentUser || {
+    id: '',
+    username: '',
+    name: '',
+    role: userRole,
+  };
+  const isAnggota = isAnggotaUser(effectiveUser);
+  const isSpOfficer = isSimpanPinjamOfficer(effectiveUser);
+  const canDeleteLoans = isSuperAdmin(effectiveUser);
+
   const activeMemberId = (currentUser?.memberId || (isAnggota ? currentUser?.username : undefined))?.trim().toLowerCase();
   const effectiveLoans = isAnggota && activeMemberId
     ? loans.filter((l) => l.memberId?.trim().toLowerCase() === activeMemberId)
@@ -200,8 +230,37 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
           memberId: eligibleMembers[0].id,
         }));
       }
+      setLoanSubmitError(null);
     }
   }, [isNewLoanModalOpen, eligibleMembers, newLoanForm.memberId]);
+
+  const [selectedParentLoanId, setSelectedParentLoanId] = useState<string>('');
+  const [isSubmittingLoan, setIsSubmittingLoan] = useState(false);
+  const [loanSubmitError, setLoanSubmitError] = useState<string | null>(null);
+  const [isSavingMutation, setIsSavingMutation] = useState(false);
+  const [isMigratingLocalSp, setIsMigratingLocalSp] = useState(false);
+
+  const activeMemberLoans = loans.filter(
+    (l) =>
+      l.memberId === newLoanForm.memberId &&
+      (l.status === 'aktif' || l.status === 'dicairkan')
+  );
+  const isTopUpMode = activeMemberLoans.length > 0;
+
+  useEffect(() => {
+    if (!isTopUpMode) {
+      if (selectedParentLoanId) setSelectedParentLoanId('');
+      return;
+    }
+    if (!activeMemberLoans.some((l) => l.id === selectedParentLoanId)) {
+      setSelectedParentLoanId(activeMemberLoans[0]?.id || '');
+    }
+  }, [isTopUpMode, activeMemberLoans, selectedParentLoanId]);
+
+  const selectedParentLoan =
+    activeMemberLoans.find((l) => l.id === selectedParentLoanId) ||
+    activeMemberLoans[0] ||
+    null;
 
   // Amortization Schedule Print
   const handlePrintAmortizationSchedule = (loan: Loan) => {
@@ -325,12 +384,14 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
   };
 
   // Calculate stats
-  const activeLoans = effectiveLoans.filter((l) => l.status === 'aktif');
-  const pendingLoans = effectiveLoans.filter((l) => l.status === 'menunggu');
+  const activeLoans = effectiveLoans.filter((l) => l.status === 'aktif' || l.status === 'dicairkan');
+  const pendingLoans = effectiveLoans.filter(
+    (l) => l.status === 'menunggu' || l.status === 'diajukan' || l.status === 'review'
+  );
   const completedLoans = effectiveLoans.filter((l) => l.status === 'lunas');
 
   const totalDisbursed = effectiveLoans
-    .filter((l) => l.status === 'aktif' || l.status === 'lunas')
+    .filter((l) => l.status === 'aktif' || l.status === 'dicairkan' || l.status === 'lunas')
     .reduce((acc, curr) => acc + curr.amount, 0);
 
   const totalOutstanding = activeLoans.reduce((acc, curr) => {
@@ -340,60 +401,150 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
   // Filtered Loans
   const filteredLoans = effectiveLoans.filter((l) => {
     if (statusFilter === 'semua') return true;
+    if (statusFilter === 'aktif') return l.status === 'aktif' || l.status === 'dicairkan';
+    if (statusFilter === 'menunggu') {
+      return l.status === 'menunggu' || l.status === 'diajukan' || l.status === 'review';
+    }
     return l.status === statusFilter;
   });
 
   // Live Loan Calculation Preview for form
-  const calcMonthlyPrincipal = Math.round(newLoanForm.amount / newLoanForm.tenorMonths);
+  const safeTenorMonths = Math.min(60, Math.max(1, Number(newLoanForm.tenorMonths) || 1));
+  const calcMonthlyPrincipal = Math.round(newLoanForm.amount / safeTenorMonths);
   const calcMonthlyInterest = Math.round(newLoanForm.amount * (newLoanForm.interestRatePerMonth / 100));
   const calcMonthlyTotal = calcMonthlyPrincipal + calcMonthlyInterest;
   const calcAdminFee = Math.round(newLoanForm.amount * (newLoanForm.adminFeeRate / 100));
-  const calcTotalRepayment = calcMonthlyTotal * newLoanForm.tenorMonths;
+  const topUpPreview =
+    isTopUpMode && selectedParentLoan
+      ? calculateTopUpPreview(selectedParentLoan, newLoanForm.amount, newLoanForm.startDate)
+      : null;
 
-  const handleLoanSubmit = (e: React.FormEvent) => {
+  const handleLoanSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmittingLoan) return;
+    setLoanSubmitError(null);
+
     const targetMemberId = newLoanForm.memberId || eligibleMembers[0]?.id;
     const mem = eligibleMembers.find((m) => m.id === targetMemberId) || members.find((m) => m.id === targetMemberId);
     if (!mem || newLoanForm.amount <= 0) {
-      alert('Silakan pilih anggota dan masukkan nominal pinjaman yang valid.');
+      setLoanSubmitError('Silakan pilih anggota dan masukkan nominal pinjaman yang valid.');
       return;
     }
 
-    onAddLoan({
-      memberId: mem.id,
-      memberName: mem.name,
-      amount: newLoanForm.amount,
-      tenorMonths: Number(newLoanForm.tenorMonths),
-      interestRatePerMonth: 1.1, // Suku bunga koperasi terkunci 1.1% flat per bulan
-      adminFee: calcAdminFee, // Biaya administrasi terkunci 1.0% potong di awal
-      startDate: newLoanForm.startDate,
-      status: 'aktif', // Automatically active or approved by admin
-      approvedDate: newLoanForm.startDate,
-      purpose: newLoanForm.purpose,
-      notes: newLoanForm.notes,
-    });
+    if (safeTenorMonths < 1 || safeTenorMonths > 60) {
+      setLoanSubmitError('Tenor pinjaman harus antara 1 sampai 60 bulan.');
+      return;
+    }
 
-    setIsNewLoanModalOpen(false);
+    if (isTopUpMode && selectedParentLoan) {
+      if (!topUpPreview || !topUpPreview.isValidNetPositive) {
+        setLoanSubmitError(
+          'Dana bersih diterima anggota harus lebih besar dari Rp 0 setelah pelunasan pokok lama, tunggakan bunga, dan biaya admin 1%.'
+        );
+        return;
+      }
+      if (!onCreateTopUpLoan) {
+        setLoanSubmitError('Handler Top Up Pinjaman belum tersedia.');
+        return;
+      }
 
-    // Show Disbursement Receipt
-    onShowReceipt({
-      receiptNo: `KW-DISB-${Date.now().toString().slice(-6)}`,
-      title: 'BUKTI REALISASI PENCAIRAN PINJAMAN',
-      date: newLoanForm.startDate,
-      memberId: mem.id,
-      memberName: mem.name,
-      amount: newLoanForm.amount,
-      typeText: `Pencairan Pinjaman KSP (${newLoanForm.tenorMonths} Bulan)`,
-      notes: `Tujuan: ${newLoanForm.purpose} • Biaya Admin: ${formatRupiah(calcAdminFee)}`,
-      officerName: 'Komite Pinjaman KSP',
-      breakdown: [
-        { label: 'Plafon Pinjaman', value: formatRupiah(newLoanForm.amount) },
-        { label: 'Tenor Cicilan', value: `${newLoanForm.tenorMonths} Bulan` },
-        { label: 'Bunga Flat / Bln', value: `${newLoanForm.interestRatePerMonth}%` },
-        { label: 'Angsuran / Bln', value: formatRupiah(calcMonthlyTotal) },
-        { label: 'Biaya Administrasi', value: formatRupiah(calcAdminFee) },
-      ],
-    });
+      setIsSubmittingLoan(true);
+      try {
+        const res = await onCreateTopUpLoan(
+          {
+            parentLoanId: selectedParentLoan.id,
+            memberId: mem.id,
+            memberName: mem.name,
+            newAmount: Number(newLoanForm.amount),
+            tenorMonths: safeTenorMonths,
+            startDate: newLoanForm.startDate,
+            purpose: newLoanForm.purpose,
+            notes: newLoanForm.notes,
+          },
+          selectedParentLoan
+        );
+
+        if (!res || !res.success) {
+          setLoanSubmitError(res?.message || 'Gagal memproses Top Up Pinjaman.');
+          return;
+        }
+
+        setIsNewLoanModalOpen(false);
+        const settledPrincipal = res.rpcResult?.settledPrincipal ?? topUpPreview.remainingPrincipal;
+        const settledInterest = res.rpcResult?.settledInterest ?? topUpPreview.overdueInterest;
+        const adminFeeActual = res.rpcResult?.adminFee ?? topUpPreview.adminFee;
+        const netToMemberActual = res.rpcResult?.netDisbursedToMember ?? topUpPreview.netToMember;
+
+        onShowReceipt({
+          receiptNo: `KW-TOPUP-${Date.now().toString().slice(-6)}`,
+          title: 'BUKTI REALISASI TOP UP PINJAMAN',
+          date: newLoanForm.startDate,
+          memberId: mem.id,
+          memberName: mem.name,
+          amount: netToMemberActual,
+          typeText: `Top Up Pinjaman (${res.rpcResult?.newLoanId || 'BARU'}) • Pelunasan ${selectedParentLoan.id}`,
+          notes: `Tujuan: ${newLoanForm.purpose} • Dana bersih ditransfer ke anggota setelah pelunasan pokok lama & biaya admin 1%.`,
+          officerName: currentUser?.name || 'Admin Simpan Pinjam',
+          breakdown: [
+            { label: 'Plafon Pinjaman Baru', value: formatRupiah(newLoanForm.amount) },
+            { label: `Pelunasan Pokok (${selectedParentLoan.id})`, value: `- ${formatRupiah(settledPrincipal)}` },
+            { label: 'Tunggakan Bunga Jatuh Tempo', value: `- ${formatRupiah(settledInterest)}` },
+            { label: 'Bunga Masa Depan Dihapuskan', value: 'Rp 0' },
+            { label: 'Biaya Admin 1% Plafon Baru', value: `- ${formatRupiah(adminFeeActual)}` },
+            { label: 'Dana Bersih Diterima Anggota', value: formatRupiah(netToMemberActual) },
+          ],
+        });
+      } finally {
+        setIsSubmittingLoan(false);
+      }
+      return;
+    }
+
+    setIsSubmittingLoan(true);
+    try {
+      const res = await onAddLoan({
+        memberId: mem.id,
+        memberName: mem.name,
+        amount: newLoanForm.amount,
+        tenorMonths: safeTenorMonths,
+        interestRatePerMonth: 1.1, // Suku bunga koperasi terkunci 1.1% flat per bulan
+        adminFee: calcAdminFee, // Biaya administrasi terkunci 1.0% potong di awal
+        startDate: newLoanForm.startDate,
+        status: 'aktif', // Automatically active or approved by admin
+        approvedDate: newLoanForm.startDate,
+        purpose: newLoanForm.purpose,
+        notes: newLoanForm.notes,
+      });
+
+      if (res && res.success === false) {
+        setLoanSubmitError(res.message || 'Gagal mencatat pinjaman.');
+        return;
+      }
+
+      setIsNewLoanModalOpen(false);
+
+      // Show Disbursement Receipt
+      onShowReceipt({
+        receiptNo: `KW-DISB-${Date.now().toString().slice(-6)}`,
+        title: 'BUKTI REALISASI PENCAIRAN PINJAMAN',
+        date: newLoanForm.startDate,
+        memberId: mem.id,
+        memberName: mem.name,
+        amount: newLoanForm.amount,
+        typeText: `Pencairan Pinjaman KSP (${safeTenorMonths} Bulan)`,
+        notes: `Tujuan: ${newLoanForm.purpose} • Biaya Admin: ${formatRupiah(calcAdminFee)}`,
+        officerName: currentUser?.name || 'Komite Pinjaman KSP',
+        breakdown: [
+          { label: 'Plafon Pinjaman', value: formatRupiah(newLoanForm.amount) },
+          { label: 'Tenor Cicilan', value: `${safeTenorMonths} Bulan` },
+          { label: 'Bunga Flat / Bln', value: `${newLoanForm.interestRatePerMonth}%` },
+          { label: 'Angsuran / Bln', value: formatRupiah(calcMonthlyTotal) },
+          { label: 'Biaya Administrasi', value: formatRupiah(calcAdminFee) },
+        ],
+      });
+    } finally {
+      setIsSubmittingLoan(false);
+    }
   };
 
   const handleProcessRepayment = (e: React.FormEvent) => {
@@ -512,25 +663,33 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
     setIsMutationModalOpen(true);
   };
 
-  const handleMutationSubmit = (e: React.FormEvent) => {
+  const handleMutationSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSavingMutation) return;
     if (mutationForm.amount <= 0) {
       alert('Nominal transaksi kas harus lebih dari Rp 0.');
       return;
     }
     if (onAddSpCashMutation) {
-      onAddSpCashMutation({
-        date: mutationForm.date,
-        type: mutationForm.type,
-        category: mutationForm.category,
-        amount: Number(mutationForm.amount),
-        description: mutationForm.description.trim(),
-        sourceOrRecipient: mutationForm.sourceOrRecipient.trim(),
-        recordedBy: mutationForm.recordedBy.trim(),
-        notes: mutationForm.notes.trim() || undefined,
-      });
+      setIsSavingMutation(true);
+      try {
+        await onAddSpCashMutation({
+          date: mutationForm.date,
+          type: mutationForm.type,
+          category: mutationForm.category,
+          amount: Number(mutationForm.amount),
+          description: mutationForm.description.trim(),
+          sourceOrRecipient: mutationForm.sourceOrRecipient.trim(),
+          recordedBy: mutationForm.recordedBy.trim(),
+          notes: mutationForm.notes.trim() || undefined,
+        });
+        setIsMutationModalOpen(false);
+      } finally {
+        setIsSavingMutation(false);
+      }
+    } else {
+      setIsMutationModalOpen(false);
     }
-    setIsMutationModalOpen(false);
   };
 
   const handlePrintBuktiKasPdf = (m: SimpanPinjamCashMutation) => {
@@ -797,12 +956,12 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
             </span>
           ) : (
             <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-300">
-              Lokal ({loans.length} Pinjaman)
+              Belum Tersinkron ({loans.length} Pinjaman)
             </span>
           )}
         </div>
 
-        {activeSubTab === 'kas_unit_sp' && userRole === 'pengurus' && (
+        {activeSubTab === 'kas_unit_sp' && isSpOfficer && (
           <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => handleOpenMutationModal('penambahan')}
@@ -920,13 +1079,16 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
             <option value="ditolak">Ditolak</option>
           </select>
 
-          {userRole === 'pengurus' && (
+          {isSpOfficer && (
             <button
-              onClick={() => setIsNewLoanModalOpen(true)}
+              onClick={() => {
+                setLoanSubmitError(null);
+                setIsNewLoanModalOpen(true);
+              }}
               className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-semibold text-xs transition cursor-pointer shadow-xs"
             >
               <PlusCircle className="w-4 h-4" />
-              + Pengajuan Pinjaman Baru
+              + Pengajuan Pinjaman / Top Up
             </button>
           )}
         </div>
@@ -963,9 +1125,21 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
                   return (
                     <tr key={loan.id} className="hover:bg-slate-50/70 transition">
                       <td className="px-5 py-3.5">
-                        <span className="font-mono text-xs font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded">
-                          {loan.id}
-                        </span>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-mono text-xs font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded">
+                            {loan.id}
+                          </span>
+                          {loan.isTopUp && loan.parentLoanId && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-800 border border-indigo-200">
+                              Top Up dari {loan.parentLoanId}
+                            </span>
+                          )}
+                          {(loan.settlementType === 'topup' || loan.toppedUpByLoanId) && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-800 border border-blue-200">
+                              Dilunasi Top Up &rarr; {loan.toppedUpByLoanId || 'Baru'}
+                            </span>
+                          )}
+                        </div>
                         <div className="font-semibold text-slate-900 mt-1">{loan.memberName}</div>
                         <div className="text-[11px] text-slate-400 font-mono">{loan.memberId}</div>
                       </td>
@@ -1006,27 +1180,29 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
                       <td className="px-5 py-3.5 text-center">
                         <span
                           className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold ${
-                            loan.status === 'aktif'
+                            loan.status === 'aktif' || loan.status === 'dicairkan'
                               ? 'bg-amber-50 text-amber-800 border border-amber-200'
                               : loan.status === 'lunas'
                               ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                              : loan.status === 'menunggu'
+                              : loan.status === 'menunggu' || loan.status === 'diajukan' || loan.status === 'review'
                               ? 'bg-purple-50 text-purple-700 border border-purple-200'
                               : 'bg-rose-50 text-rose-700 border border-rose-200'
                           }`}
                         >
-                          {loan.status === 'aktif'
+                          {loan.status === 'aktif' || loan.status === 'dicairkan'
                             ? 'Aktif'
                             : loan.status === 'lunas'
-                            ? 'Lunas'
-                            : loan.status === 'menunggu'
+                            ? loan.settlementType === 'topup'
+                              ? 'Lunas (Top Up)'
+                              : 'Lunas'
+                            : loan.status === 'menunggu' || loan.status === 'diajukan' || loan.status === 'review'
                             ? 'Menunggu'
                             : 'Ditolak'}
                         </span>
                       </td>
                       <td className="px-5 py-3.5 text-right">
                         <div className="flex items-center justify-end gap-1.5">
-                          {userRole === 'pengurus' && loan.status === 'menunggu' && (
+                          {isSpOfficer && (loan.status === 'menunggu' || loan.status === 'diajukan' || loan.status === 'review') && (
                             <>
                               <button
                                 onClick={() => onApproveLoan(loan.id)}
@@ -1046,14 +1222,14 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
                             </>
                           )}
 
-                          {userRole === 'pengurus' && loan.status === 'aktif' && (
+                          {isSpOfficer && (loan.status === 'aktif' || loan.status === 'dicairkan') && (
                             <button
                               onClick={() => {
                                 setRepaymentModalLoan(loan);
                                 setRepaymentForm({
                                   penalty: 0,
                                   notes: `Angsuran pinjaman ${loan.id}`,
-                                  adminName: 'Petugas Koperasi',
+                                  adminName: currentUser?.name || 'Petugas Koperasi',
                                 });
                               }}
                               className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white text-xs font-semibold transition cursor-pointer border border-emerald-200"
@@ -1071,15 +1247,20 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
                             <FileText className="w-4 h-4" />
                           </button>
 
-                          {userRole === 'pengurus' && onDeleteLoan && (
-                            <button
-                              onClick={() => setLoanToDelete(loan)}
-                              title="Hapus Pinjaman"
-                              className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          )}
+                          {canDeleteLoans &&
+                            onDeleteLoan &&
+                            !loan.isTopUp &&
+                            !loan.parentLoanId &&
+                            !loan.toppedUpByLoanId &&
+                            loan.settlementType !== 'topup' && (
+                              <button
+                                onClick={() => setLoanToDelete(loan)}
+                                title="Hapus Pinjaman"
+                                className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
                         </div>
                       </td>
                     </tr>
@@ -1096,6 +1277,35 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
   {/* SUB-TAB 2: KAS UNIT SIMPAN PINJAM (MUTASI & ADJUSTMENT KAS) */}
   {activeSubTab === 'kas_unit_sp' && (
     <div className="space-y-6">
+      {hasLocalUnsyncedSpCash && onMigrateLocalSpCash && isSpOfficer && (
+        <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold">Ditemukan Data Kas SP Lokal Perangkat Ini</p>
+              <p className="text-[11px] text-amber-800 mt-0.5">
+                Terdapat mutasi Kas Unit SP lama di penyimpanan browser lokal. Klik tombol migrasi untuk menyinkronkannya ke database PostgreSQL Supabase secara resmi.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            disabled={isMigratingLocalSp}
+            onClick={async () => {
+              setIsMigratingLocalSp(true);
+              try {
+                await onMigrateLocalSpCash();
+              } finally {
+                setIsMigratingLocalSp(false);
+              }
+            }}
+            className="px-3.5 py-2 rounded-lg bg-amber-700 hover:bg-amber-800 text-white font-bold text-xs transition cursor-pointer shrink-0 disabled:opacity-50"
+          >
+            {isMigratingLocalSp ? 'Memigrasi...' : 'Migrasi Kas SP ke Supabase'}
+          </button>
+        </div>
+      )}
+
       {/* Top Banner Kas Unit SP */}
       <div className="bg-gradient-to-r from-emerald-950 via-slate-900 to-teal-950 rounded-2xl p-5 text-white shadow-md border border-emerald-800/40 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -1247,7 +1457,7 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
           )}
         </div>
 
-        {userRole === 'pengurus' && (
+        {isSpOfficer && (
           <div className="flex items-center gap-2">
             <button
               onClick={() => handleOpenMutationModal('penambahan')}
@@ -1326,7 +1536,7 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
                         ? 'Saldo awal Kas Unit Simpan Pinjam disetel Rp0 (nol). Pengurus/bendahara dapat mencatat penyesuaian saldo melalui tombol "+ Tambah Kas" (misal alokasi dana segar Rp10.000.000 dari Simpanan Pokok & Wajib) atau "- Kurang Kas" untuk kebutuhan operasional.'
                         : 'Silakan ubah filter jenis, kategori, atau kata kunci pencarian Anda untuk melihat transaksi lainnya.'}
                     </p>
-                    {userRole === 'pengurus' && mutationsList.length === 0 && (
+                    {isSpOfficer && mutationsList.length === 0 && (
                       <div className="mt-5 flex flex-wrap justify-center gap-3">
                         <button
                           onClick={() => handleOpenMutationModal('penambahan')}
@@ -1408,7 +1618,7 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
                           >
                             <ReceiptText className="w-4 h-4" />
                           </button>
-                          {userRole === 'pengurus' && onDeleteSpCashMutation && (
+                          {isSpOfficer && onDeleteSpCashMutation && (
                             <button
                               onClick={() => setMutationToDelete(m)}
                               title="Hapus Transaksi Kas"
@@ -1737,19 +1947,21 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
           <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2.5">
             <button
               type="button"
+              disabled={isSavingMutation}
               onClick={() => setIsMutationModalOpen(false)}
-              className="px-4 py-2 text-xs font-bold rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-100 transition cursor-pointer"
+              className="px-4 py-2 text-xs font-bold rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-100 transition cursor-pointer disabled:opacity-50"
             >
               Batal
             </button>
             <button
               type="submit"
-              className={`px-5 py-2 text-xs font-black rounded-xl text-white shadow-md transition cursor-pointer flex items-center gap-1.5 ${
+              disabled={isSavingMutation}
+              className={`px-5 py-2 text-xs font-black rounded-xl text-white shadow-md transition cursor-pointer flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed ${
                 mutationForm.type === 'penambahan' ? 'bg-emerald-700 hover:bg-emerald-800' : 'bg-rose-700 hover:bg-rose-800'
               }`}
             >
               <Check className="w-4 h-4" />
-              <span>Simpan Mutasi Kas</span>
+              <span>{isSavingMutation ? 'Menyimpan...' : 'Simpan Mutasi Kas'}</span>
             </button>
           </div>
         </form>
@@ -1845,18 +2057,23 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
                   <Printer className="w-3.5 h-3.5" />
                   <span>Cetak Jadwal (PDF)</span>
                 </button>
-                {userRole === 'pengurus' && onDeleteLoan && (
-                  <button
-                    onClick={() => {
-                      setLoanToDelete(selectedLoanDetail);
-                    }}
-                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 font-bold text-xs transition cursor-pointer"
-                    title="Hapus Data Pinjaman"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Hapus Pinjaman</span>
-                  </button>
-                )}
+                {canDeleteLoans &&
+                  onDeleteLoan &&
+                  !selectedLoanDetail.isTopUp &&
+                  !selectedLoanDetail.parentLoanId &&
+                  !selectedLoanDetail.toppedUpByLoanId &&
+                  selectedLoanDetail.settlementType !== 'topup' && (
+                    <button
+                      onClick={() => {
+                        setLoanToDelete(selectedLoanDetail);
+                      }}
+                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 font-bold text-xs transition cursor-pointer"
+                      title="Hapus Data Pinjaman"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Hapus Pinjaman</span>
+                    </button>
+                  )}
                 <button
                   onClick={() => setSelectedLoanDetail(null)}
                   className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-200 hover:text-slate-600 transition cursor-pointer"
@@ -1867,6 +2084,26 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
             </div>
 
             <div className="p-6 max-h-[70vh] overflow-y-auto space-y-5">
+              {(selectedLoanDetail.isTopUp || selectedLoanDetail.settlementType === 'topup' || selectedLoanDetail.toppedUpByLoanId) && (
+                <div className="p-3.5 rounded-xl bg-indigo-50 border border-indigo-200 text-xs text-indigo-950 space-y-1">
+                  {selectedLoanDetail.isTopUp && selectedLoanDetail.parentLoanId && (
+                    <div>
+                      <span className="font-bold">Pinjaman Top Up:</span> Melunasi pinjaman lama{' '}
+                      <span className="font-mono font-bold">{selectedLoanDetail.parentLoanId}</span> &bull; Pelunasan Pokok:{' '}
+                      <span className="font-mono font-bold">{formatRupiah(selectedLoanDetail.topUpSettledPrincipal || 0)}</span> &bull; Tunggakan Bunga:{' '}
+                      <span className="font-mono font-bold">{formatRupiah(selectedLoanDetail.topUpSettledInterest || 0)}</span> &bull; Pencairan Bersih Anggota:{' '}
+                      <span className="font-mono font-black text-emerald-800">{formatRupiah(selectedLoanDetail.netDisbursedAmount ?? selectedLoanDetail.amount)}</span>
+                    </div>
+                  )}
+                  {(selectedLoanDetail.settlementType === 'topup' || selectedLoanDetail.toppedUpByLoanId) && (
+                    <div>
+                      <span className="font-bold">Ditutup Melalui Top Up:</span> Pinjaman ini dilunasi otomatis oleh pinjaman baru{' '}
+                      <span className="font-mono font-bold">{selectedLoanDetail.toppedUpByLoanId || '-'}</span>. Riwayat jadwal dikunci untuk menjaga keutuhan audit.
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Summary of this loan - Menampilkan 7 Metrik Finansial Sesuai Jadwal Resmi */}
               {(() => {
                 const rem = calculateLoanRemaining(selectedLoanDetail);
@@ -1983,24 +2220,35 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
                           {item.paidDate ? formatDateIndo(item.paidDate) : '-'}
                         </td>
                         <td className="px-3 py-2.5 text-center font-sans">
-                          {userRole === 'pengurus' && (
-                            <button
-                              onClick={() => {
-                                setEditingScheduleItem({
-                                  loanId: selectedLoanDetail.id,
-                                  month: item.month,
-                                  isPaid: item.isPaid,
-                                  paidDate: item.paidDate || new Date().toISOString().split('T')[0],
-                                  notes: '',
-                                });
-                              }}
-                              className="px-2 py-1 text-[11px] font-bold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition cursor-pointer inline-flex items-center gap-1"
-                              title="Koreksi / Edit Status Pembayaran"
-                            >
-                              <Edit3 className="w-3 h-3 text-slate-600" />
-                              <span>Edit</span>
-                            </button>
-                          )}
+                          {isSpOfficer &&
+                            selectedLoanDetail.settlementType !== 'topup' &&
+                            !selectedLoanDetail.toppedUpByLoanId ? (
+                              <button
+                                onClick={() => {
+                                  setEditingScheduleItem({
+                                    loanId: selectedLoanDetail.id,
+                                    month: item.month,
+                                    isPaid: item.isPaid,
+                                    paidDate: item.paidDate || new Date().toISOString().split('T')[0],
+                                    notes: '',
+                                  });
+                                }}
+                                className="px-2 py-1 text-[11px] font-bold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition cursor-pointer inline-flex items-center gap-1"
+                                title="Koreksi / Edit Status Pembayaran"
+                              >
+                                <Edit3 className="w-3 h-3 text-slate-600" />
+                                <span>Edit</span>
+                              </button>
+                            ) : selectedLoanDetail.settlementType === 'topup' ||
+                              selectedLoanDetail.toppedUpByLoanId ? (
+                              <span
+                                className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-400"
+                                title="Jadwal dikunci karena ditutup melalui Top Up"
+                              >
+                                <Lock className="w-3 h-3" />
+                                <span>Terkunci</span>
+                              </span>
+                            ) : null}
                         </td>
                       </tr>
                     ))}
@@ -2264,65 +2512,148 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
         </div>
       )}
 
-      {/* MODAL: PENGAJUAN PINJAMAN BARU */}
+      {/* MODAL: PENGAJUAN PINJAMAN BARU / TOP UP PINJAMAN */}
       {isNewLoanModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs overflow-y-auto">
           <div className="relative w-full max-w-xl rounded-2xl bg-white shadow-2xl transition-all border border-slate-200 overflow-hidden my-6">
             <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-6 py-4">
               <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
                 <PlusCircle className="w-5 h-5 text-emerald-700" />
-                Formulir Pengajuan Pinjaman Anggota
+                <span>
+                  {isTopUpMode
+                    ? 'Formulir Top Up Pinjaman Anggota'
+                    : 'Formulir Pengajuan Pinjaman Anggota'}
+                </span>
               </h3>
               <button
-                onClick={() => setIsNewLoanModalOpen(false)}
-                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-200 hover:text-slate-600 transition cursor-pointer"
+                onClick={() => !isSubmittingLoan && setIsNewLoanModalOpen(false)}
+                disabled={isSubmittingLoan}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-200 hover:text-slate-600 transition cursor-pointer disabled:opacity-40"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleLoanSubmit} className="p-6 space-y-4 text-xs">
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Pilih Anggota Peminjam <span className="text-rose-500">*</span>
-                </label>
-                <select
-                  required
-                  value={newLoanForm.memberId}
-                  onChange={(e) => setNewLoanForm({ ...newLoanForm, memberId: e.target.value })}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-medium text-slate-800"
-                >
-                  {eligibleMembers.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.id} - {m.name}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-[10px] text-slate-400 mt-1">
-                  * Hanya menampilkan nomor registrasi dan nama anggota aktif (anggota keluar tidak ditampilkan).
-                </p>
+            <form onSubmit={handleLoanSubmit} className="p-6 space-y-4 text-xs max-h-[82vh] overflow-y-auto">
+              {loanSubmitError && (
+                <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <span className="font-medium leading-relaxed">{loanSubmitError}</span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="sm:col-span-2">
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Pilih Anggota Peminjam <span className="text-rose-500">*</span>
+                  </label>
+                  <select
+                    required
+                    disabled={isSubmittingLoan}
+                    value={newLoanForm.memberId}
+                    onChange={(e) => {
+                      setLoanSubmitError(null);
+                      setNewLoanForm({ ...newLoanForm, memberId: e.target.value });
+                    }}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-medium text-slate-800 disabled:bg-slate-100"
+                  >
+                    {eligibleMembers.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.id} - {m.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    * Hanya menampilkan nomor registrasi dan nama anggota aktif/pasif (anggota keluar tidak ditampilkan).
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Tanggal Akad / Cair <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    disabled={isSubmittingLoan}
+                    value={newLoanForm.startDate}
+                    onChange={(e) => setNewLoanForm({ ...newLoanForm, startDate: e.target.value })}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-medium text-slate-800 disabled:bg-slate-100"
+                  />
+                </div>
               </div>
+
+              {isTopUpMode && selectedParentLoan && (
+                <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-300 space-y-2.5">
+                  <div className="flex items-start gap-2 text-amber-950">
+                    <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-bold text-xs">
+                        Anggota Memiliki Pinjaman Aktif — Wajib Diproses Sebagai Top Up Pinjaman
+                      </p>
+                      <p className="text-[11px] text-amber-800 mt-0.5 leading-relaxed">
+                        Sisa pokok pinjaman lama beserta tunggakan bunga yang sudah jatuh tempo akan dilunasi otomatis dari plafon pinjaman baru. Bunga masa depan yang belum jatuh tempo dihapuskan (Rp 0).
+                      </p>
+                    </div>
+                  </div>
+
+                  {activeMemberLoans.length > 1 ? (
+                    <div>
+                      <label className="block text-[11px] font-bold text-amber-900 mb-1">
+                        Pilih Pinjaman Aktif yang Akan Dilunasi ({activeMemberLoans.length} pinjaman aktif):
+                      </label>
+                      <select
+                        value={selectedParentLoan.id}
+                        disabled={isSubmittingLoan}
+                        onChange={(e) => setSelectedParentLoanId(e.target.value)}
+                        className="w-full px-3 py-2 rounded-lg border border-amber-300 bg-white text-xs font-bold text-slate-900 focus:outline-none"
+                      >
+                        {activeMemberLoans.map((l) => {
+                          const rem = calculateLoanRemaining(l);
+                          return (
+                            <option key={l.id} value={l.id}>
+                              {l.id} — Plafon {formatRupiah(l.amount)} (Sisa Pokok {formatRupiah(rem.remainingPrincipal)})
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </div>
+                  ) : (
+                    <div className="px-3 py-2 rounded-lg bg-white border border-amber-200 flex items-center justify-between text-[11px]">
+                      <span className="font-bold text-slate-700">
+                        Pinjaman Dilunasi: <span className="font-mono text-indigo-900">{selectedParentLoan.id}</span>
+                      </span>
+                      <span className="font-mono font-bold text-rose-700">
+                        Sisa Pokok: {formatRupiah(topUpPreview?.remainingPrincipal || 0)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block font-semibold text-slate-700 mb-1">
-                    Jumlah Pengajuan (Plafon Rp) <span className="text-rose-500">*</span>
+                    {isTopUpMode ? 'Plafon Pinjaman Baru (Rp)' : 'Jumlah Pengajuan (Plafon Rp)'}{' '}
+                    <span className="text-rose-500">*</span>
                   </label>
                   <input
                     type="number"
                     min={500000}
                     step={500000}
                     required
+                    disabled={isSubmittingLoan}
                     value={newLoanForm.amount}
                     onChange={(e) => setNewLoanForm({ ...newLoanForm, amount: Number(e.target.value) })}
-                    className="w-full px-3 py-2 font-mono font-bold text-sm text-slate-900 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                    className="w-full px-3 py-2 font-mono font-bold text-sm text-slate-900 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 disabled:bg-slate-100"
                   />
                   {/* Preset chip amounts */}
-                  <div className="flex gap-1.5 mt-2">
-                    {[3000000, 5000000, 10000000, 15000000].map((amt) => (
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {[3000000, 5000000, 10000000, 15000000, 30000000].map((amt) => (
                       <button
                         key={amt}
                         type="button"
+                        disabled={isSubmittingLoan}
                         onClick={() => setNewLoanForm({ ...newLoanForm, amount: amt })}
                         className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-[10px] font-mono text-slate-700 cursor-pointer"
                       >
@@ -2335,35 +2666,37 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
                 <div>
                   <div className="flex justify-between items-center mb-1">
                     <label className="font-semibold text-slate-700">
-                      Tenor Pinjaman (Bulan) <span className="text-rose-500">*</span>
+                      Tenor Pinjaman (1–60 Bulan) <span className="text-rose-500">*</span>
                     </label>
                     <span className="text-[11px] font-bold text-blue-900 font-mono">
-                      {newLoanForm.tenorMonths} Bulan ({Math.round(newLoanForm.tenorMonths / 12 * 10) / 10} Thn)
+                      {safeTenorMonths} Bulan ({Math.round((safeTenorMonths / 12) * 10) / 10} Thn)
                     </span>
                   </div>
                   <input
                     type="number"
                     min={1}
-                    max={120}
+                    max={60}
                     required
+                    disabled={isSubmittingLoan}
                     value={newLoanForm.tenorMonths}
                     onChange={(e) =>
                       setNewLoanForm({
                         ...newLoanForm,
-                        tenorMonths: Math.max(1, Number(e.target.value)),
+                        tenorMonths: Math.min(60, Math.max(1, Number(e.target.value) || 1)),
                       })
                     }
-                    placeholder="Ketik jumlah bulan, cth: 10"
-                    className="w-full px-3 py-2 font-mono font-bold rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-900/20 focus:border-blue-900"
+                    placeholder="Ketik jumlah bulan (1-60)"
+                    className="w-full px-3 py-2 font-mono font-bold rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-900/20 focus:border-blue-900 disabled:bg-slate-100"
                   />
                   <div className="flex flex-wrap gap-1.5 mt-1.5">
-                    {[3, 6, 10, 12, 18, 24, 36].map((t) => (
+                    {[3, 6, 10, 12, 18, 24, 36, 48, 60].map((t) => (
                       <button
                         key={t}
                         type="button"
+                        disabled={isSubmittingLoan}
                         onClick={() => setNewLoanForm({ ...newLoanForm, tenorMonths: t })}
                         className={`px-2 py-0.5 rounded text-[10px] font-mono cursor-pointer transition ${
-                          newLoanForm.tenorMonths === t
+                          safeTenorMonths === t
                             ? 'bg-blue-900 text-white font-bold'
                             : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
                         }`}
@@ -2405,7 +2738,7 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="block text-xs font-bold text-slate-700">
-                      Biaya Administrasi (% Potong di Awal)
+                      Biaya Administrasi (% Plafon Baru)
                     </label>
                     <span className="text-[10px] text-emerald-800 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 font-bold flex items-center gap-1">
                       <Lock className="w-3 h-3" /> Terkunci
@@ -2424,7 +2757,7 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
                     </div>
                   </div>
                   <span className="text-[10px] text-slate-600 font-medium mt-1 block">
-                    Nominal: <strong className="text-slate-900 font-mono">{formatRupiah(calcAdminFee)}</strong> (1,0% Potong di Awal - Terkunci)
+                    Nominal: <strong className="text-slate-900 font-mono">{formatRupiah(calcAdminFee)}</strong> (1,0% Plafon Baru Penuh - Kas SP)
                   </span>
                 </div>
               </div>
@@ -2436,17 +2769,69 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
                 <input
                   type="text"
                   required
-                  placeholder="Contoh: Pembelian mesin jahit dan bahan kain konveksi"
+                  disabled={isSubmittingLoan}
+                  placeholder="Contoh: Top Up modal usaha dan kebutuhan keluarga"
                   value={newLoanForm.purpose}
                   onChange={(e) => setNewLoanForm({ ...newLoanForm, purpose: e.target.value })}
-                  className="w-full px-3 py-2 text-xs rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                  className="w-full px-3 py-2 text-xs rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 disabled:bg-slate-100"
                 />
               </div>
+
+              {/* TOP UP SETTLEMENT PREVIEW */}
+              {isTopUpMode && selectedParentLoan && topUpPreview && (
+                <div className="p-4 rounded-xl bg-indigo-50/70 border border-indigo-200 space-y-2">
+                  <h4 className="font-bold text-indigo-950 text-xs flex items-center justify-between">
+                    <span>Rincian Pelunasan & Pencairan Bersih Top Up:</span>
+                    <span className="font-mono text-[11px] bg-white px-2 py-0.5 rounded border border-indigo-200 text-indigo-900">
+                      Pinjaman Lama: {selectedParentLoan.id}
+                    </span>
+                  </h4>
+                  <div className="space-y-1.5 text-[11px]">
+                    <div className="flex justify-between">
+                      <span className="text-slate-600">Plafon Pinjaman Baru:</span>
+                      <span className="font-mono font-bold text-slate-900">{formatRupiah(topUpPreview.newAmount)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-600">Pelunasan Sisa Pokok Lama:</span>
+                      <span className="font-mono font-bold text-rose-700">- {formatRupiah(topUpPreview.remainingPrincipal)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-600">
+                        Tunggakan Bunga Jatuh Tempo ({topUpPreview.overdueInstallmentCount} bln):
+                      </span>
+                      <span className="font-mono font-bold text-rose-700">- {formatRupiah(topUpPreview.overdueInterest)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-600">Bunga Masa Depan Dihapuskan:</span>
+                      <span className="font-mono font-bold text-emerald-700">Rp 0</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-600">Biaya Admin 1% Plafon Baru (Kas SP):</span>
+                      <span className="font-mono font-bold text-rose-700">- {formatRupiah(topUpPreview.adminFee)}</span>
+                    </div>
+                    <div className="flex justify-between pt-2 border-t border-indigo-200 text-xs font-black">
+                      <span className="text-indigo-950">Dana Bersih Diterima Anggota:</span>
+                      <span
+                        className={`font-mono text-sm ${
+                          topUpPreview.isValidNetPositive ? 'text-emerald-800' : 'text-rose-700'
+                        }`}
+                      >
+                        {formatRupiah(topUpPreview.netToMember)}
+                      </span>
+                    </div>
+                  </div>
+                  {!topUpPreview.isValidNetPositive && (
+                    <div className="p-2.5 rounded-lg bg-rose-100 border border-rose-300 text-rose-900 text-[11px] font-bold">
+                      Dana bersih diterima anggota harus lebih besar dari Rp 0. Naikkan plafon pinjaman baru agar mencukupi seluruh pelunasan dan biaya admin 1%.
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* LIVE SIMULATION BOX */}
               <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
                 <h4 className="font-bold text-slate-800 text-xs flex items-center justify-between">
-                  <span>Rincian Simulasi Cicilan:</span>
+                  <span>Rincian Simulasi Cicilan Pinjaman Baru:</span>
                   <span className="text-[11px] text-emerald-700 font-semibold">Otomatis Terhitung (1,1% Flat)</span>
                 </h4>
                 <div className="grid grid-cols-2 gap-2 text-[11px]">
@@ -2470,16 +2855,25 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
               <div className="pt-2 flex justify-end gap-2.5">
                 <button
                   type="button"
+                  disabled={isSubmittingLoan}
                   onClick={() => setIsNewLoanModalOpen(false)}
-                  className="px-4 py-2 font-semibold text-slate-600 hover:bg-slate-100 rounded-lg transition cursor-pointer"
+                  className="px-4 py-2 font-semibold text-slate-600 hover:bg-slate-100 rounded-lg transition cursor-pointer disabled:opacity-50"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg shadow-xs transition cursor-pointer"
+                  disabled={
+                    isSubmittingLoan ||
+                    (isTopUpMode && (!topUpPreview || !topUpPreview.isValidNetPositive))
+                  }
+                  className="px-5 py-2 font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg shadow-xs transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Setujui & Cairkan Pinjaman
+                  {isSubmittingLoan
+                    ? 'Memproses ke Server...'
+                    : isTopUpMode
+                    ? 'Setujui & Cairkan Top Up'
+                    : 'Setujui & Cairkan Pinjaman'}
                 </button>
               </div>
             </form>

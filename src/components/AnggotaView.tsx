@@ -30,6 +30,7 @@ import {
   calculateJoinDateFromSavings,
 } from '../utils/storage';
 import { printHtmlContent } from '../utils/printHelper';
+import { isAdminSp, isAnggotaUser, isSuperAdmin } from '../utils/permissions';
 
 interface AnggotaViewProps {
   members: Member[];
@@ -150,10 +151,10 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
         }
         case 'remainingDebt': {
           valA = loans
-            .filter((l) => l.memberId === a.id && l.status === 'aktif')
+            .filter((l) => l.memberId === a.id && (l.status === 'aktif' || l.status === 'dicairkan'))
             .reduce((acc, curr) => acc + calculateLoanRemaining(curr).remainingPrincipal, 0);
           valB = loans
-            .filter((l) => l.memberId === b.id && l.status === 'aktif')
+            .filter((l) => l.memberId === b.id && (l.status === 'aktif' || l.status === 'dicairkan'))
             .reduce((acc, curr) => acc + calculateLoanRemaining(curr).remainingPrincipal, 0);
           break;
         }
@@ -296,7 +297,15 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
     printHtmlContent(ktaHtml, `KTA-${m.id}-${m.name.replace(/[^a-zA-Z0-9]/g, '_')}`);
   };
 
-  const isAnggota = userRole === 'anggota' || currentUser?.role === 'anggota';
+  const effectiveUser: AuthUser | null = currentUser || {
+    id: '',
+    username: '',
+    name: '',
+    role: userRole,
+  };
+  const isAnggota = isAnggotaUser(effectiveUser);
+  const canEditMembers = isSuperAdmin(effectiveUser);
+  const isAdminSpReadOnly = isAdminSp(effectiveUser);
   const myMemberId = (currentUser?.memberId || (isAnggota ? currentUser?.username : undefined) || 'BJS-001').trim();
   const myMember: Member = members.find((m) => m.id.toLowerCase() === myMemberId.toLowerCase()) || {
     id: myMemberId,
@@ -316,7 +325,7 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
   if (isAnggota) {
     const sav = calculateMemberSavings(myMember.id, savings);
     const memLoans = loans.filter((l) => l.memberId === myMember.id);
-    const activeLoans = memLoans.filter((l) => l.status === 'aktif');
+    const activeLoans = memLoans.filter((l) => l.status === 'aktif' || l.status === 'dicairkan');
     const totalRemainingDebt = activeLoans.reduce(
       (acc, curr) => acc + calculateLoanRemaining(curr).remainingPrincipal,
       0
@@ -611,7 +620,7 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
                 </span>
               ) : (
                 <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-400/30">
-                  Cadangan Lokal ({members.length})
+                  Belum Tersinkron ({members.length})
                 </span>
               )}
             </div>
@@ -620,7 +629,7 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
             </h2>
           </div>
 
-          {userRole === 'pengurus' ? (
+          {canEditMembers ? (
             <button
               onClick={() => setIsAddModalOpen(true)}
               className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-red-700 to-rose-900 hover:from-red-600 hover:to-rose-800 text-white font-bold text-xs shadow-md transition-all cursor-pointer border border-red-500/40 shrink-0"
@@ -630,7 +639,7 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
             </button>
           ) : (
             <div className="px-3.5 py-2 bg-white/10 rounded-xl border border-white/20 text-xs text-blue-100 font-medium">
-              Mode Anggota (Hanya Lihat)
+              {isAdminSpReadOnly ? 'Mode Baca (Admin SP)' : 'Mode Anggota (Hanya Lihat)'}
             </div>
           )}
         </div>
@@ -863,7 +872,7 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
               ) : (
                 sortedMembers.map((member) => {
                   const sav = calculateMemberSavings(member.id, savings);
-                  const activeLoanList = loans.filter((l) => l.memberId === member.id && l.status === 'aktif');
+                  const activeLoanList = loans.filter((l) => l.memberId === member.id && (l.status === 'aktif' || l.status === 'dicairkan'));
                   const remainingDebt = activeLoanList.reduce(
                     (acc, curr) => acc + calculateLoanRemaining(curr).remainingPrincipal,
                     0
@@ -959,7 +968,7 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
                           >
                             <Eye className="w-4 h-4" />
                           </button>
-                          {userRole === 'pengurus' && (
+                          {canEditMembers && (
                             <>
                               <button
                                 onClick={() => setEditingMember(member)}

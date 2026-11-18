@@ -16,16 +16,10 @@ import { mapSupabaseSavingsToSavings } from './savingsService';
 import { mapSupabaseLoanToLoan, mapSupabaseRepaymentToRepayment } from './loanService';
 import { mapSupabaseCashFlowToCashFlow } from './cashFlowService';
 import { mapSupabaseBuTxToBusinessUnitTransaction } from './businessUnitService';
+import { extractSpCashMutationsFromCashFlow } from './spCashService';
 import {
   computeCooperativeSummary,
   calculateBusinessUnitReports,
-  loadMembers,
-  loadSavings,
-  loadLoans,
-  loadRepayments,
-  loadCashFlow,
-  loadBusinessTransactions,
-  loadSpCashMutations,
 } from '../utils/storage';
 
 export interface ReportNeracaSakEtap {
@@ -143,8 +137,31 @@ export function computeNeracaSakEtap(summary: CooperativeSummary): ReportNeracaS
  * - Menghormati batasan RLS per role pengguna (Pengurus vs Anggota).
  * - Menggunakan fallback ke dummy/localStorage jika koneksi database mengalami kendala.
  */
+function getEmptyReportData(errorMessage: string): ReportAggregateResult {
+  const emptyReports = calculateBusinessUnitReports([]);
+  const emptySummary = computeCooperativeSummary([], [], [], [], [], [], []);
+  const emptyNeraca = computeNeracaSakEtap(emptySummary);
+  return {
+    summary: emptySummary,
+    members: [],
+    savings: [],
+    loans: [],
+    repayments: [],
+    cashFlow: [],
+    businessTransactions: [],
+    unitReports: emptyReports.reports,
+    neraca: emptyNeraca,
+    fromSupabase: false,
+    error: errorMessage,
+  };
+}
+
+/**
+ * Mengambil dan mengagregasi data resmi Laporan Keuangan langsung dari tabel Supabase PostgreSQL
+ * tanpa mencampur data dummy atau cadangan localStorage.
+ */
 export async function fetchReportDataFromSupabase(
-  userRole: UserRole = 'pengurus',
+  userRole: UserRole = 'super_admin',
   memberId?: string
 ): Promise<ReportAggregateResult> {
   try {
@@ -153,6 +170,7 @@ export async function fetchReportDataFromSupabase(
       savingsRes,
       loansRes,
       repaymentsRes,
+      schedulesRes,
       cashFlowRes,
       businessUnitsRes,
       buTxRes,
@@ -161,12 +179,12 @@ export async function fetchReportDataFromSupabase(
       supabase.from('savings_transactions').select('*').order('transaction_date', { ascending: false }),
       supabase.from('loans').select('*').order('created_at', { ascending: false }),
       supabase.from('loan_repayments').select('*').order('created_at', { ascending: false }),
+      supabase.from('loan_schedules').select('*').order('installment_no', { ascending: true }),
       supabase.from('cash_flow_records').select('*').order('transaction_date', { ascending: false }),
       supabase.from('business_units').select('*'),
       supabase.from('business_unit_transactions').select('*').order('transaction_date', { ascending: false }),
     ]);
 
-    // Identifikasi aman query mana yang mengalami kendala (tanpa mengekspos token/rahasia)
     const failedQueries: string[] = [];
     if (membersRes.error) failedQueries.push(`members: ${membersRes.error.message}`);
     if (savingsRes.error) failedQueries.push(`savings_transactions: ${savingsRes.error.message}`);
@@ -177,37 +195,27 @@ export async function fetchReportDataFromSupabase(
     if (buTxRes.error) failedQueries.push(`business_unit_transactions: ${buTxRes.error.message}`);
 
     if (failedQueries.length > 0) {
-      console.warn(
-        'Gagal memuat agregasi laporan dari Supabase pada query:',
-        failedQueries.join('; '),
-        '-> beralih ke cadangan lokal.'
-      );
-      return getFallbackReportData('Gagal memuat data laporan dari server. Menampilkan data cadangan lokal.');
+      console.warn('Gagal memuat agregasi laporan dari Supabase pada query:', failedQueries.join('; '));
+      return getEmptyReportData('Gagal memuat data laporan dari server.');
     }
 
-    // Mapping data dari Supabase (snake_case ke camelCase)
     const rawMembers = membersRes.data || [];
     let mappedMembers: Member[] = rawMembers.map(mapSupabaseMemberToMember);
 
     const rawSavings = savingsRes.data || [];
-    const localSavingsFallback = loadSavings();
-    const mappedRawSavings = rawSavings.map((s: any) =>
+    let mappedSavings: SavingsTransaction[] = rawSavings.map((s: any) =>
       mapSupabaseSavingsToSavings(s, mappedMembers)
     );
-    const existingSavingsIds = new Set(mappedRawSavings.map((s) => s.id));
-    let mappedSavings: SavingsTransaction[] = [
-      ...mappedRawSavings,
-      ...localSavingsFallback.filter((s) => !existingSavingsIds.has(s.id)),
-    ];
 
     const rawRepayments = repaymentsRes.data || [];
     let mappedRepayments: LoanRepayment[] = rawRepayments.map((r: any, idx: number) =>
       mapSupabaseRepaymentToRepayment(r, idx, mappedMembers)
     );
 
+    const rawSchedules = schedulesRes.data || [];
     const rawLoans = loansRes.data || [];
     let mappedLoans: Loan[] = rawLoans.map((l: any) =>
-      mapSupabaseLoanToLoan(l, mappedRepayments, mappedMembers)
+      mapSupabaseLoanToLoan(l, mappedRepayments, mappedMembers, rawSchedules)
     );
 
     const rawCashFlow = cashFlowRes.data || [];
@@ -216,10 +224,10 @@ export async function fetchReportDataFromSupabase(
     const rawBuTx = buTxRes.data || [];
     const mappedBuTx: BusinessUnitTransaction[] = rawBuTx.map(mapSupabaseBuTxToBusinessUnitTransaction);
 
-    // Ambil mutasi kas SP lokal
-    const spCashMutations: SimpanPinjamCashMutation[] = loadSpCashMutations();
+    // Mutasi Kas Unit SP langsung dari cash_flow_records
+    const spCashMutations: SimpanPinjamCashMutation[] =
+      extractSpCashMutationsFromCashFlow(mappedCashFlow);
 
-    // Khusus role anggota: batasi record agar tidak membocorkan data keuangan internal
     if (userRole === 'anggota' && memberId) {
       const cleanMemberId = memberId.toLowerCase().trim();
       mappedMembers = mappedMembers.filter((m) => m.id.toLowerCase().trim() === cleanMemberId);
@@ -228,7 +236,6 @@ export async function fetchReportDataFromSupabase(
       mappedRepayments = mappedRepayments.filter((r) => r.memberId?.toLowerCase().trim() === cleanMemberId);
     }
 
-    // Hitung ringkasan eksekutif koperasi & laporan unit usaha
     const buCalc = calculateBusinessUnitReports(mappedBuTx);
     const summary = computeCooperativeSummary(
       mappedMembers,
@@ -240,7 +247,6 @@ export async function fetchReportDataFromSupabase(
       spCashMutations
     );
 
-    // Hitung neraca standar SAK ETAP Koperasi
     const neraca = computeNeracaSakEtap(summary);
 
     return {
@@ -258,45 +264,6 @@ export async function fetchReportDataFromSupabase(
     };
   } catch (err: any) {
     console.error('Terjadi pengecualian saat memuat agregasi laporan:', err);
-    return getFallbackReportData('Terjadi kendala jaringan saat memuat laporan. Menampilkan data cadangan lokal.');
+    return getEmptyReportData('Terjadi kendala jaringan saat memuat laporan.');
   }
-}
-
-/**
- * Cadangan data laporan lokal (fallback) jika query Supabase tidak dapat diakses
- */
-function getFallbackReportData(errorMessage: string): ReportAggregateResult {
-  const localMembers = loadMembers();
-  const localSavings = loadSavings();
-  const localLoans = loadLoans();
-  const localRepayments = loadRepayments();
-  const localCashFlow = loadCashFlow();
-  const localBuTx = loadBusinessTransactions();
-  const localSpMutations = loadSpCashMutations();
-
-  const buCalc = calculateBusinessUnitReports(localBuTx);
-  const summary = computeCooperativeSummary(
-    localMembers,
-    localSavings,
-    localLoans,
-    localRepayments,
-    localCashFlow,
-    localBuTx,
-    localSpMutations
-  );
-  const neraca = computeNeracaSakEtap(summary);
-
-  return {
-    summary,
-    members: localMembers,
-    savings: localSavings,
-    loans: localLoans,
-    repayments: localRepayments,
-    cashFlow: localCashFlow,
-    businessTransactions: localBuTx,
-    unitReports: buCalc.reports,
-    neraca,
-    fromSupabase: false,
-    error: errorMessage,
-  };
 }

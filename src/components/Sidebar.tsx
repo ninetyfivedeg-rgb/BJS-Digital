@@ -22,19 +22,21 @@ import {
   Layers,
   BadgePercent,
   Wallet,
+  UserCog,
 } from 'lucide-react';
 import { AuthUser, BusinessUnitId } from '../types';
+import {
+  AppNavTab,
+  canAccessTab,
+  getManagedBusinessUnit,
+  getRoleDisplayLabel,
+  isAnggotaUser,
+  isBusinessUnitManager,
+  isSimpanPinjamOfficer,
+  isSuperAdmin,
+} from '../utils/permissions';
 
-export type NavTab =
-  | 'dashboard'
-  | 'anggota'
-  | 'simpanan'
-  | 'pinjaman'
-  | 'unit_usaha'
-  | 'shu'
-  | 'simulasi'
-  | 'laporan'
-  | 'audit_log';
+export type NavTab = AppNavTab;
 
 interface SidebarProps {
   activeTab: NavTab;
@@ -84,7 +86,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'kas_unit_sp', label: 'Kas Unit Simpan Pinjam', icon: Wallet },
   ];
 
-  const businessSubUnits: { id: 'semua' | BusinessUnitId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+  const allBusinessSubUnits: { id: 'semua' | BusinessUnitId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
     { id: 'semua', label: 'Konsolidasi Semua Unit', icon: Layers },
     { id: 'alat_kebakaran', label: 'Penjualan Alat Kebakaran', icon: ShieldAlert },
     { id: 'apar', label: 'Isi Ulang APAR', icon: Flame },
@@ -92,65 +94,85 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'atribut', label: 'Penjualan Atribut', icon: Shirt },
   ];
 
-  const isAnggota = currentUser?.role === 'anggota';
+  const isAnggota = isAnggotaUser(currentUser);
+  const isOfficerSP = isSimpanPinjamOfficer(currentUser);
+  const isUnitMgr = isBusinessUnitManager(currentUser);
+  const managedUnit = getManagedBusinessUnit(currentUser);
 
-  const rawNavItems = [
+  const businessSubUnits =
+    !isSuperAdmin(currentUser) && managedUnit
+      ? allBusinessSubUnits.filter((u) => u.id === managedUnit)
+      : allBusinessSubUnits;
+
+  const rawNavItems: {
+    id: NavTab;
+    label: string;
+    icon: React.ComponentType<{ className?: string }>;
+    badge?: number;
+    hasSubMenu?: boolean;
+  }[] = [
     {
-      id: 'dashboard' as NavTab,
+      id: 'dashboard',
       label: 'Dashboard',
       icon: LayoutDashboard,
     },
     {
-      id: 'anggota' as NavTab,
+      id: 'anggota',
       label: isAnggota ? 'Profil Anggota Saya' : 'Buku Data Anggota',
       icon: Users,
     },
     {
-      id: 'simpanan' as NavTab,
+      id: 'simpanan',
       label: isAnggota ? 'Simpanan Saya' : 'Simpanan Anggota',
       icon: PiggyBank,
       hasSubMenu: true,
     },
     {
-      id: 'pinjaman' as NavTab,
+      id: 'pinjaman',
       label: isAnggota ? 'Pinjaman Saya' : 'Pinjaman & Kas SP',
       icon: HandCoins,
-      badge: !isAnggota && pendingLoansCount > 0 ? pendingLoansCount : undefined,
-      hasSubMenu: !isAnggota,
+      badge: isOfficerSP && pendingLoansCount > 0 ? pendingLoansCount : undefined,
+      hasSubMenu: isOfficerSP,
     },
     {
-      id: 'unit_usaha' as NavTab,
+      id: 'laporan_usp',
+      label: 'Laporan Unit SP',
+      icon: FileSpreadsheet,
+    },
+    {
+      id: 'unit_usaha',
       label: 'Laporan Unit Usaha',
       icon: Store,
-      hasSubMenu: true,
-      hideForAnggota: true,
+      hasSubMenu: !isUnitMgr || businessSubUnits.length > 0,
     },
     {
-      id: 'shu' as NavTab,
+      id: 'shu',
       label: 'Sisa Hasil Usaha (SHU)',
       icon: Scale,
-      hideForAnggota: true,
     },
     {
-      id: 'simulasi' as NavTab,
+      id: 'simulasi',
       label: 'Simulasi',
       icon: Calculator,
     },
     {
-      id: 'laporan' as NavTab,
+      id: 'laporan',
       label: 'Buku Kas & Laporan',
       icon: FileSpreadsheet,
-      hideForAnggota: true,
     },
     {
-      id: 'audit_log' as NavTab,
+      id: 'audit_log',
       label: 'Audit Log & Rekam Jejak',
       icon: ShieldAlert,
-      hideForAnggota: true,
+    },
+    {
+      id: 'manajemen_user',
+      label: 'Manajemen User & Role',
+      icon: UserCog,
     },
   ];
 
-  const navItems = rawNavItems.filter((item) => !(isAnggota && item.hideForAnggota));
+  const navItems = rawNavItems.filter((item) => canAccessTab(currentUser, item.id));
 
   const handleSelectTab = (tab: NavTab) => {
     setActiveTab(tab);
@@ -290,7 +312,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         </span>
                       )}
 
-                      {isUnitUsaha || isSimpanan || (isPinjaman && !isAnggota) ? (
+                      {isUnitUsaha || isSimpanan || (isPinjaman && isOfficerSP) ? (
                         <ChevronDown
                           className={`w-3.5 h-3.5 transition-transform shrink-0 ${
                             isActive ? 'text-red-200' : 'text-slate-400'
@@ -334,7 +356,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   )}
 
                   {/* Sub-menu untuk Pinjaman & Kas Unit Simpan Pinjam */}
-                  {isPinjaman && !isAnggota && (pinjamanOpen || isActive) && (
+                  {isPinjaman && isOfficerSP && (pinjamanOpen || isActive) && (
                     <div className="pl-6 pr-1 py-1 space-y-1 bg-slate-50/80 rounded-xl border border-slate-100 my-1">
                       {loanSubTabs.map((sub) => {
                         const SubIcon = sub.icon;
@@ -392,10 +414,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Bottom Section: User Info, Ganti Password, & Logout */}
       <div className="p-3 border-t border-slate-100 bg-slate-50/50 space-y-2">
         {currentUser && (
-          <div className="p-2.5 rounded-xl bg-white border border-slate-200 shadow-xs flex items-center justify-between">
+          <div className="p-2.5 rounded-xl bg-white border border-slate-200 shadow-xs flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 min-w-0">
               <div className="w-7 h-7 rounded-lg bg-blue-100 text-blue-900 flex items-center justify-center shrink-0">
-                {currentUser.role === 'pengurus' ? (
+                {!isAnggota ? (
                   <ShieldCheck className="w-4 h-4 text-blue-800" />
                 ) : (
                   <User className="w-4 h-4 text-emerald-700" />
@@ -404,18 +426,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <div className="min-w-0">
                 <p className="text-xs font-bold text-slate-900 truncate">{currentUser.name}</p>
                 <p className="text-[10px] text-slate-500 font-mono truncate">
-                  {currentUser.role === 'pengurus' ? 'Role: Pengurus' : `Reg: ${currentUser.username}`}
+                  {!isAnggota ? getRoleDisplayLabel(currentUser) : `Reg: ${currentUser.username}`}
                 </p>
               </div>
             </div>
             <span
-              className={`text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded ${
-                currentUser.role === 'pengurus'
+              className={`text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded shrink-0 ${
+                !isAnggota
                   ? 'bg-blue-50 text-blue-800 border border-blue-200'
                   : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
               }`}
             >
-              {currentUser.role === 'pengurus' ? 'Pengurus' : 'Anggota'}
+              {isSuperAdmin(currentUser)
+                ? 'Super Admin'
+                : isOfficerSP
+                ? 'Admin SP'
+                : isUnitMgr
+                ? 'Pengelola'
+                : 'Anggota'}
             </span>
           </div>
         )}
