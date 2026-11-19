@@ -604,15 +604,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-red-600 text-white shadow-xs">
               KOPERASI BRAMA JAYA SEJAHTERA
             </span>
-            {isFromSupabase ? (
-              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-200 border border-emerald-400/40">
-                Supabase PostgreSQL
-              </span>
-            ) : (
-              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-200 border border-amber-400/40">
-                Belum Tersinkron
-              </span>
-            )}
           </div>
           <h2 className="text-xl font-black tracking-tight text-white">
             Dashboard Simpan Pinjam & Unit Usaha
@@ -687,20 +678,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </span>
               )}
             </div>
-            <p className="text-[11px] text-slate-500 mt-0.5">
-              Kas & Bank Terverifikasi: <strong className="font-mono text-slate-800">{formatRupiah(summary.totalCash)}</strong>
-              {summary.totalCash > 0 && (
-                <span className="text-slate-600 font-medium ml-1">
-                  (Fisik: <strong className="font-mono text-slate-700">{formatRupiah(summary.totalCashFisik ?? 0)}</strong>, Bank: <strong className="font-mono text-slate-700">{formatRupiah(summary.totalCashBank ?? 0)}</strong>)
-                </span>
-              )}
-              {' '}&bull; Simpanan Historis: <strong className="font-mono text-slate-800">{formatRupiah(summary.totalSavings.total)}</strong>
-              {summary.totalSavings.total !== summary.totalCash && (
-                <span className="text-amber-800 font-semibold ml-1">
-                  (Selisih Terbuka: {formatRupiah(Math.abs(summary.totalSavings.total - summary.totalCash))})
-                </span>
-              )}
-            </p>
           </div>
         </div>
         {isFullAdmin && (

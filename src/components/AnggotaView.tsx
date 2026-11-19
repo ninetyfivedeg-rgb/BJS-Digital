@@ -62,7 +62,6 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
   currentUser,
   isLoading = false,
   error = null,
-  isFromSupabase = false,
   onRefresh,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
@@ -644,23 +643,6 @@ export const AnggotaView: React.FC<AnggotaViewProps> = ({
 
         <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2 mb-2 flex-wrap">
-              <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-red-600 text-white shadow-xs">
-                Buku Induk
-              </span>
-              <span className="text-xs text-blue-200 font-semibold">
-                KSP Brama Jaya Sejahtera (BJS Digital)
-              </span>
-              {isFromSupabase ? (
-                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
-                  Supabase PostgreSQL ({members.length})
-                </span>
-              ) : (
-                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-400/30">
-                  Belum Tersinkron ({members.length})
-                </span>
-              )}
-            </div>
             <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight">
               Direktori 217 Anggota Koperasi
             </h2>

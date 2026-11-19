@@ -24,7 +24,6 @@ import {
   Filter,
   Building2,
   SlidersHorizontal,
-  FileSpreadsheet,
 } from 'lucide-react';
 import {
   Member,
@@ -127,7 +126,6 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
   onMigrateLocalSpCash,
   hasLocalUnsyncedSpCash = false,
   activeSubTab: controlledSubTab,
-  setActiveSubTab: setControlledSubTab,
   savings = [],
   cashFlow = [],
   spManagerName,
@@ -160,17 +158,10 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
     ? repayments.filter((r) => r.memberId?.trim().toLowerCase() === activeMemberId)
     : repayments;
 
-  // Sub-menu state for Unit Simpan Pinjam module (controlled with internal fallback)
-  const [internalSubTab, setInternalSubTab] = useState<'daftar_pinjaman' | 'kas_unit_sp' | 'laporan_usp'>('daftar_pinjaman');
+  // Sub-menu state for Unit Simpan Pinjam module (dikendalikan melalui menu sidebar)
   const activeSubTab = !isSpOfficer && controlledSubTab && controlledSubTab !== 'daftar_pinjaman'
     ? 'daftar_pinjaman'
-    : (controlledSubTab ?? internalSubTab);
-  const setActiveSubTab = (tab: 'daftar_pinjaman' | 'kas_unit_sp' | 'laporan_usp') => {
-    setInternalSubTab(tab);
-    if (setControlledSubTab) {
-      setControlledSubTab(tab);
-    }
-  };
+    : (controlledSubTab ?? 'daftar_pinjaman');
 
   // Kas Unit Simpan Pinjam States
   const [isMutationModalOpen, setIsMutationModalOpen] = useState(false);
@@ -920,109 +911,33 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
         </div>
       )}
 
-      {/* Sub-Menu Navigasi Modul Pinjaman / Simpan Pinjam */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-3">
-        <div className="flex items-center gap-2 bg-slate-100 p-1.5 rounded-xl border border-slate-200/80 flex-wrap">
+      {/* Action Buttons khusus Kas Unit SP (Navigasi sub-menu dipusatkan di Sidebar) */}
+      {activeSubTab === 'kas_unit_sp' && isSpOfficer && (
+        <div className="flex flex-wrap items-center justify-end gap-2 border-b border-slate-200 pb-3">
           <button
-            onClick={() => setActiveSubTab('daftar_pinjaman')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-              activeSubTab === 'daftar_pinjaman'
-                ? 'bg-emerald-700 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
-            }`}
+            onClick={() => handleOpenMutationModal('penambahan')}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs transition cursor-pointer shadow-xs"
           >
-            <HandCoins className="w-4 h-4" />
-            <span>{isSpOfficer ? 'Daftar Pinjaman Anggota' : 'Buku Pinjaman Saya'}</span>
-            <span
-              className={`px-2 py-0.5 rounded-full text-[10px] font-mono ${
-                activeSubTab === 'daftar_pinjaman'
-                  ? 'bg-emerald-800 text-white'
-                  : 'bg-slate-200 text-slate-700'
-              }`}
-            >
-              {effectiveLoans.length}
-            </span>
+            <PlusCircle className="w-4 h-4" />
+            <span>+ Tambah Kas (Masuk)</span>
           </button>
-
-          {isSpOfficer && (
-            <>
-              <button
-                onClick={() => setActiveSubTab('kas_unit_sp')}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-                  activeSubTab === 'kas_unit_sp'
-                    ? 'bg-emerald-700 text-white shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
-                }`}
-              >
-                <Wallet className="w-4 h-4" />
-                <span>Kas Unit Simpan Pinjam</span>
-                <span
-                  className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${
-                    saldoKasUnitSP > 0
-                      ? activeSubTab === 'kas_unit_sp'
-                        ? 'bg-emerald-900 text-emerald-200'
-                        : 'bg-emerald-100 text-emerald-800'
-                      : activeSubTab === 'kas_unit_sp'
-                      ? 'bg-emerald-800 text-white'
-                      : 'bg-slate-200 text-slate-700'
-                  }`}
-                >
-                  {formatRupiah(saldoKasUnitSP)}
-                </span>
-              </button>
-
-              <button
-                onClick={() => setActiveSubTab('laporan_usp')}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-                  activeSubTab === 'laporan_usp'
-                    ? 'bg-emerald-700 text-white shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
-                }`}
-              >
-                <FileSpreadsheet className="w-4 h-4" />
-                <span>Laporan Unit SP</span>
-              </button>
-            </>
-          )}
-
-          {isFromSupabase ? (
-            <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-300">
-              Supabase ({effectiveLoans.length} Pinjaman)
-            </span>
-          ) : (
-            <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-300">
-              Belum Tersinkron ({effectiveLoans.length} Pinjaman)
-            </span>
-          )}
+          <button
+            onClick={() => handleOpenMutationModal('pengurangan')}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white font-bold text-xs transition cursor-pointer shadow-xs"
+          >
+            <MinusCircle className="w-4 h-4" />
+            <span>- Kurang Kas (Keluar)</span>
+          </button>
+          <button
+            onClick={handlePrintKasUnitSpPdf}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-bold text-xs transition cursor-pointer shadow-xs"
+            title="Cetak Laporan Buku Kas Unit Simpan Pinjam"
+          >
+            <Printer className="w-4 h-4 text-slate-600" />
+            <span>Cetak Buku Kas</span>
+          </button>
         </div>
-
-        {activeSubTab === 'kas_unit_sp' && isSpOfficer && (
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={() => handleOpenMutationModal('penambahan')}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs transition cursor-pointer shadow-xs"
-            >
-              <PlusCircle className="w-4 h-4" />
-              <span>+ Tambah Kas (Masuk)</span>
-            </button>
-            <button
-              onClick={() => handleOpenMutationModal('pengurangan')}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white font-bold text-xs transition cursor-pointer shadow-xs"
-            >
-              <MinusCircle className="w-4 h-4" />
-              <span>- Kurang Kas (Keluar)</span>
-            </button>
-            <button
-              onClick={handlePrintKasUnitSpPdf}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-bold text-xs transition cursor-pointer shadow-xs"
-              title="Cetak Laporan Buku Kas Unit Simpan Pinjam"
-            >
-              <Printer className="w-4 h-4 text-slate-600" />
-              <span>Cetak Buku Kas</span>
-            </button>
-          </div>
-        )}
-      </div>
+      )}
 
       {activeSubTab === 'daftar_pinjaman' && (
         <div className="space-y-6">
@@ -1073,7 +988,6 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
                 <div className="mt-3 text-xl font-bold font-mono text-slate-900">
                   {formatRupiah(totalDisbursed)}
                 </div>
-                <div className="mt-2 text-xs text-slate-500">Total akumulasi pencairan modal</div>
               </div>
 
               <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
@@ -1088,7 +1002,6 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
                 <div className="mt-3 text-xl font-bold font-mono text-slate-900">
                   {formatRupiah(totalOutstanding)}
                 </div>
-                <div className="mt-2 text-xs text-slate-500">Sisa pokok yang sedang dicicil</div>
               </div>
 
               <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
@@ -1103,7 +1016,6 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
                 <div className="mt-3 text-xl font-bold font-mono text-slate-900">
                   {activeLoans.length} Berjalan
                 </div>
-                <div className="mt-2 text-xs text-slate-500">{completedLoans.length} pinjaman lunas</div>
               </div>
 
               <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
@@ -1118,7 +1030,6 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
                 <div className="mt-3 text-xl font-bold font-mono text-slate-900">
                   {pendingLoans.length} Pengajuan
                 </div>
-                <div className="mt-2 text-xs text-slate-500">Perlu persetujuan komite</div>
               </div>
             </div>
           )}

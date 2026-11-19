@@ -118,8 +118,6 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
                 {currentUser.name}
               </p>
               <div className="flex items-center justify-end gap-1 text-[10px] text-slate-500">
-                <span className="font-mono">{currentUser.username}</span>
-                <span>&bull;</span>
                 <span className="font-semibold text-blue-900">{getRoleDisplayLabel(currentUser)}</span>
               </div>
             </div>

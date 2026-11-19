@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   PiggyBank,
   ArrowDownLeft,
@@ -57,8 +57,7 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
   onAddSavings,
   onShowReceipt,
   initialSelectedMemberId,
-  activeSubTab,
-  setActiveSubTab,
+  activeSubTab = 'pokok_wajib',
   isDepositModalOpen,
   setIsDepositModalOpen,
   isBerjangkaModalOpen = false,
@@ -71,31 +70,11 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
   spManagerName,
   isLoading = false,
   error = null,
-  isFromSupabase = false,
   onRefresh,
 }) => {
   const effectiveSpManagerName = spManagerName || KOPERASI_OFFICIALS.manajerSimpanPinjam;
-  // Navigation tabs:
-  // 1) 'pokok_wajib' (Pilar 1: Ekuitas Pokok & Wajib)
-  // 2) 'berjangka' (Pilar 2: Simpanan Berjangka 6% p.a.)
-  // 3) 'mutasi' (Buku Mutasi Transaksi)
-  const [internalActiveTab, setInternalActiveTab] = useState<'pokok_wajib' | 'berjangka' | 'mutasi'>(
-    activeSubTab || 'pokok_wajib'
-  );
-
-  useEffect(() => {
-    if (activeSubTab) {
-      setInternalActiveTab(activeSubTab);
-    }
-  }, [activeSubTab]);
-
-  const activeTab = activeSubTab || internalActiveTab;
-  const setActiveTab = (tab: 'pokok_wajib' | 'berjangka' | 'mutasi') => {
-    setInternalActiveTab(tab);
-    if (setActiveSubTab) {
-      setActiveSubTab(tab);
-    }
-  };
+  // Sub-tab dikendalikan sepenuhnya melalui menu sidebar
+  const activeTab = activeSubTab || 'pokok_wajib';
 
   const [searchQuery, setSearchQuery] = useState('');
   const [berjangkaSearch, setBerjangkaSearch] = useState('');
@@ -750,15 +729,6 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
               <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
                 Total Simpanan Koperasi
               </span>
-              {isFromSupabase ? (
-                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-300">
-                  Supabase ({savings.length} Tx)
-                </span>
-              ) : (
-                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-300">
-                  Cadangan Lokal ({savings.length} Tx)
-                </span>
-              )}
             </div>
             <div className="p-2 rounded-xl bg-blue-50 text-blue-900">
               <PiggyBank className="w-5 h-5" />
@@ -769,18 +739,12 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
               {formatRupiah(totalAll)}
             </span>
           </div>
-          <p className="text-xs text-slate-500 mt-1">
-            Akumulasi dari 2 pilar simpanan anggota
-          </p>
         </div>
 
         {/* Pilar 1: Simpanan Pokok & Wajib */}
         <div className="bg-white rounded-2xl border border-blue-200 p-5 shadow-xs bg-gradient-to-br from-white via-blue-50/20 to-blue-50/40">
           <div className="flex items-center justify-between">
             <div>
-              <span className="inline-block px-2 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-900 uppercase">
-                Pilar 1: Ekuitas
-              </span>
               <h3 className="text-xs font-bold text-slate-700 mt-1">
                 Simpanan Pokok & Wajib
               </h3>
@@ -805,9 +769,6 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
         <div className="bg-white rounded-2xl border border-red-200 p-5 shadow-xs bg-gradient-to-br from-white via-red-50/20 to-rose-50/30">
           <div className="flex items-center justify-between">
             <div>
-              <span className="inline-block px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-900 uppercase">
-                Pilar 2: Investasi
-              </span>
               <h3 className="text-xs font-bold text-slate-700 mt-1">
                 Simpanan Berjangka (6% p.a.)
               </h3>
@@ -839,98 +800,25 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
         </div>
       )}
 
-      {/* Tab Navigation & Action Buttons */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-3">
-        {/* Navigation Tabs */}
-        <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl">
+      {/* Action Buttons (Only visible for Super Admin & Admin SP; navigasi tab dipusatkan di Sidebar) */}
+      {canWriteSimpanan && (
+        <div className="flex flex-wrap items-center justify-end gap-2 border-b border-slate-200 pb-3">
           <button
-            onClick={() => setActiveTab('pokok_wajib')}
-            className={`px-3.5 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-              activeTab === 'pokok_wajib'
-                ? 'bg-blue-900 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
+            onClick={() => {
+              setRegularDepositForm((prev) => ({
+                ...prev,
+                memberId: initialSelectedMemberId || members[0]?.id || '',
+                date: todayDateStr,
+              }));
+              setIsDepositModalOpen(true);
+            }}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-blue-900 hover:bg-blue-950 text-white text-xs font-bold shadow-sm transition cursor-pointer"
           >
-            1. Simpanan Pokok & Wajib
-          </button>
-          <button
-            onClick={() => setActiveTab('berjangka')}
-            className={`px-3.5 py-2 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
-              activeTab === 'berjangka'
-                ? 'bg-red-900 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <BadgePercent className="w-3.5 h-3.5" />
-            <span>2. Simpanan Berjangka 6%</span>
-            <span className="px-1.5 py-0.2 text-[10px] rounded-full bg-white/20 font-bold">
-              {berjangkaList.length}
-            </span>
-          </button>
-          <button
-            onClick={() => setActiveTab('mutasi')}
-            className={`px-3.5 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-              activeTab === 'mutasi'
-                ? 'bg-slate-800 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            Buku Mutasi Transaksi
+            <ArrowDownLeft className="w-4 h-4" />
+            <span>+ Setor Pokok / Wajib</span>
           </button>
         </div>
-
-        {/* Action Buttons (Only visible for Super Admin & Admin SP) */}
-        {canWriteSimpanan && (
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => {
-                setRegularDepositForm((prev) => ({
-                  ...prev,
-                  memberId: initialSelectedMemberId || members[0]?.id || '',
-                  date: todayDateStr,
-                }));
-                setIsDepositModalOpen(true);
-              }}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-blue-900 hover:bg-blue-950 text-white text-xs font-bold shadow-sm transition cursor-pointer"
-            >
-              <ArrowDownLeft className="w-4 h-4" />
-              <span>+ Setor Pokok / Wajib</span>
-            </button>
-
-            <button
-              onClick={() => {
-                setBerjangkaForm((prev) => ({
-                  ...prev,
-                  memberId: initialSelectedMemberId || members[0]?.id || '',
-                  date: todayDateStr,
-                }));
-                setBerjangkaModalState(true);
-              }}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-gradient-to-r from-red-700 to-rose-900 hover:from-red-600 hover:to-rose-800 text-white text-xs font-bold shadow-sm transition cursor-pointer"
-            >
-              <BadgePercent className="w-4 h-4 text-red-200" />
-              <span>+ Buka Simpanan Berjangka</span>
-            </button>
-
-            {totalBerjangka > 0 && (
-              <button
-                onClick={() => {
-                  setWithdrawForm((prev) => ({
-                    ...prev,
-                    memberId: initialSelectedMemberId || members[0]?.id || '',
-                    date: todayDateStr,
-                  }));
-                  setIsWithdrawModalOpen(true);
-                }}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-bold shadow-2xs transition cursor-pointer"
-              >
-                <ArrowUpRight className="w-4 h-4 text-slate-500" />
-                <span>Pencairan Berjangka</span>
-              </button>
-            )}
-          </div>
-        )}
-      </div>
+      )}
 
       {/* TAB 1: PILAR 1 - SIMPANAN POKOK & WAJIB */}
       {activeTab === 'pokok_wajib' && (
@@ -940,9 +828,6 @@ export const SimpananView: React.FC<SimpananViewProps> = ({
               <h3 className="font-bold text-slate-900 text-sm">
                 Rekapitulasi Simpanan Pokok & Wajib Anggota
               </h3>
-              <p className="text-xs text-slate-500">
-                Simpanan Pokok Rp 200.000 (awal) & Simpanan Wajib Rp 50.000 per bulan
-              </p>
             </div>
             <div className="flex items-center gap-2">
               <div className="relative w-full sm:w-56">
