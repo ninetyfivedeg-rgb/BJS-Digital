@@ -932,7 +932,7 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
             }`}
           >
             <HandCoins className="w-4 h-4" />
-            <span>Daftar Pinjaman Anggota</span>
+            <span>{isSpOfficer ? 'Daftar Pinjaman Anggota' : 'Buku Pinjaman Saya'}</span>
             <span
               className={`px-2 py-0.5 rounded-full text-[10px] font-mono ${
                 activeSubTab === 'daftar_pinjaman'
@@ -987,11 +987,11 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
 
           {isFromSupabase ? (
             <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-300">
-              Supabase ({loans.length} Pinjaman)
+              Supabase ({effectiveLoans.length} Pinjaman)
             </span>
           ) : (
             <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-300">
-              Belum Tersinkron ({loans.length} Pinjaman)
+              Belum Tersinkron ({effectiveLoans.length} Pinjaman)
             </span>
           )}
         </div>
@@ -1058,80 +1058,86 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
             </div>
           )}
 
-          {/* Metric Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-              Total Pinjaman Disalurkan
-            </span>
-            <div className="p-2 rounded-lg bg-emerald-50 text-emerald-700">
-              <HandCoins className="w-5 h-5" />
-            </div>
-          </div>
-          <div className="mt-3 text-xl font-bold font-mono text-slate-900">
-            {formatRupiah(totalDisbursed)}
-          </div>
-          <div className="mt-2 text-xs text-slate-500">Total akumulasi pencairan modal</div>
-        </div>
+          {/* Metric Cards (Khusus Super Admin & Admin Unit Simpan Pinjam dalam mode SP) */}
+          {isSpOfficer && !onlyMyLoans && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    Total Pinjaman Disalurkan
+                  </span>
+                  <div className="p-2 rounded-lg bg-emerald-50 text-emerald-700">
+                    <HandCoins className="w-5 h-5" />
+                  </div>
+                </div>
+                <div className="mt-3 text-xl font-bold font-mono text-slate-900">
+                  {formatRupiah(totalDisbursed)}
+                </div>
+                <div className="mt-2 text-xs text-slate-500">Total akumulasi pencairan modal</div>
+              </div>
 
-        <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-              Sisa Pinjaman Beredar
-            </span>
-            <div className="p-2 rounded-lg bg-amber-50 text-amber-700">
-              <Clock className="w-5 h-5" />
-            </div>
-          </div>
-          <div className="mt-3 text-xl font-bold font-mono text-slate-900">
-            {formatRupiah(totalOutstanding)}
-          </div>
-          <div className="mt-2 text-xs text-slate-500">Sisa pokok yang sedang dicicil</div>
-        </div>
+              <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    Sisa Pinjaman Beredar
+                  </span>
+                  <div className="p-2 rounded-lg bg-amber-50 text-amber-700">
+                    <Clock className="w-5 h-5" />
+                  </div>
+                </div>
+                <div className="mt-3 text-xl font-bold font-mono text-slate-900">
+                  {formatRupiah(totalOutstanding)}
+                </div>
+                <div className="mt-2 text-xs text-slate-500">Sisa pokok yang sedang dicicil</div>
+              </div>
 
-        <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-              Pinjaman Aktif
-            </span>
-            <div className="p-2 rounded-lg bg-blue-50 text-blue-700">
-              <span className="text-xs font-bold font-mono">{activeLoans.length}</span>
-            </div>
-          </div>
-          <div className="mt-3 text-xl font-bold font-mono text-slate-900">
-            {activeLoans.length} Berjalan
-          </div>
-          <div className="mt-2 text-xs text-slate-500">{completedLoans.length} pinjaman lunas</div>
-        </div>
+              <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    Pinjaman Aktif
+                  </span>
+                  <div className="p-2 rounded-lg bg-blue-50 text-blue-700">
+                    <span className="text-xs font-bold font-mono">{activeLoans.length}</span>
+                  </div>
+                </div>
+                <div className="mt-3 text-xl font-bold font-mono text-slate-900">
+                  {activeLoans.length} Berjalan
+                </div>
+                <div className="mt-2 text-xs text-slate-500">{completedLoans.length} pinjaman lunas</div>
+              </div>
 
-        <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-              Pengajuan Menunggu
-            </span>
-            <div className="p-2 rounded-lg bg-purple-50 text-purple-700">
-              <span className="text-xs font-bold font-mono">{pendingLoans.length}</span>
+              <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    Pengajuan Menunggu
+                  </span>
+                  <div className="p-2 rounded-lg bg-purple-50 text-purple-700">
+                    <span className="text-xs font-bold font-mono">{pendingLoans.length}</span>
+                  </div>
+                </div>
+                <div className="mt-3 text-xl font-bold font-mono text-slate-900">
+                  {pendingLoans.length} Pengajuan
+                </div>
+                <div className="mt-2 text-xs text-slate-500">Perlu persetujuan komite</div>
+              </div>
             </div>
-          </div>
-          <div className="mt-3 text-xl font-bold font-mono text-slate-900">
-            {pendingLoans.length} Pengajuan
-          </div>
-          <div className="mt-2 text-xs text-slate-500">Perlu persetujuan komite</div>
-        </div>
-      </div>
+          )}
 
-      {/* Control & Filter Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-white p-5 rounded-xl border border-slate-200 shadow-xs">
-        <div>
-          <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-            <HandCoins className="w-5 h-5 text-emerald-700" />
-            Pengelolaan Pinjaman & Angsuran Anggota
-          </h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Daftar kredit produktif/konsumtif anggota dengan bunga transparan
-          </p>
-        </div>
+          {/* Control & Filter Header */}
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-white p-5 rounded-xl border border-slate-200 shadow-xs">
+            <div>
+              <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                <HandCoins className="w-5 h-5 text-emerald-700" />
+                {!isSpOfficer || onlyMyLoans
+                  ? 'Buku & Jadwal Cicilan Pinjaman Saya'
+                  : 'Pengelolaan Pinjaman & Angsuran Anggota'}
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                {!isSpOfficer || onlyMyLoans
+                  ? 'Pantau status pinjaman, sisa pokok, dan jadwal cicilan bulanan akun Anda'
+                  : 'Daftar kredit produktif/konsumtif anggota dengan bunga transparan'}
+              </p>
+            </div>
 
         <div className="flex flex-wrap items-center gap-3">
           <select
@@ -1308,10 +1314,15 @@ export const PinjamanView: React.FC<PinjamanViewProps> = ({
 
                           <button
                             onClick={() => setSelectedLoanDetail(loan)}
-                            title="Jadwal Angsuran"
-                            className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition cursor-pointer"
+                            title="Lihat Buku & Jadwal Cicilan"
+                            className={`inline-flex items-center gap-1.5 rounded-lg transition cursor-pointer ${
+                              !isSpOfficer || onlyMyLoans
+                                ? 'px-3 py-1.5 bg-blue-50 text-blue-900 hover:bg-blue-900 hover:text-white text-xs font-semibold border border-blue-200'
+                                : 'p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100'
+                            }`}
                           >
                             <FileText className="w-4 h-4" />
+                            {(!isSpOfficer || onlyMyLoans) && <span>Jadwal Cicilan</span>}
                           </button>
 
                           {canDeleteLoans &&
