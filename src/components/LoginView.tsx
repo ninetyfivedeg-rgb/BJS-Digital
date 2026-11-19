@@ -137,6 +137,12 @@ export const LoginView: React.FC<LoginViewProps> = ({ members, onLoginSuccess })
                 )}
               </button>
             </form>
+
+            <div className="mt-5 pt-4 border-t border-slate-100 text-center">
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                Lupa kata sandi akun Anda? Hubungi <strong className="text-slate-700">Super Admin / Pengurus Koperasi</strong> untuk reset kata sandi sementara.
+              </p>
+            </div>
           </div>
         </div>
 

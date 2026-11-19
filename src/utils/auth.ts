@@ -417,6 +417,89 @@ export async function updateUserProfileAssignment(
 }
 
 /**
+ * Mereset kata sandi sementara pengguna lain melalui Supabase Edge Function `reset-member-password`
+ * (khusus Super Admin). Otomatis mengaktifkan `must_change_password` agar anggota langsung
+ * membuat kata sandi baru saat login berikutnya.
+ */
+export async function adminResetUserPassword(
+  targetProfile: UserProfileRecord,
+  temporaryPassword: string,
+  mustChangePassword: boolean,
+  currentUser?: AuthUser | null
+): Promise<{ success: boolean; message: string; error?: string }> {
+  if (!isSuperAdmin(currentUser)) {
+    return {
+      success: false,
+      message: 'Akses ditolak: Hanya Super Admin yang berwenang mereset kata sandi pengguna.',
+      error: 'UNAUTHORIZED_ROLE',
+    };
+  }
+
+  if (currentUser?.id === targetProfile.id) {
+    return {
+      success: false,
+      message: 'Gunakan tombol "Ganti Sandi" di header atau sidebar untuk mengubah sandi Anda sendiri.',
+      error: 'CANNOT_RESET_SELF',
+    };
+  }
+
+  const cleanPass = temporaryPassword.trim();
+  if (cleanPass.length < 6) {
+    return {
+      success: false,
+      message: 'Kata sandi sementara minimal harus 6 karakter.',
+      error: 'INVALID_PASSWORD_LENGTH',
+    };
+  }
+
+  try {
+    const { data, error } = await supabase.functions.invoke('reset-member-password', {
+      body: {
+        targetUserId: targetProfile.id,
+        temporaryPassword: cleanPass,
+        mustChangePassword,
+      },
+    });
+
+    if (error) {
+      const rawMsg = error.message || '';
+      const isNotDeployed =
+        rawMsg.toLowerCase().includes('failed to send') ||
+        rawMsg.toLowerCase().includes('404') ||
+        rawMsg.toLowerCase().includes('not found');
+      return {
+        success: false,
+        message: isNotDeployed
+          ? 'Edge Function "reset-member-password" belum terpasang di project Supabase Anda. Silakan deploy fungsi tersebut terlebih dahulu melalui Supabase Dashboard.'
+          : `Gagal mereset kata sandi: ${rawMsg}`,
+        error: rawMsg,
+      };
+    }
+
+    if (data && data.success === false) {
+      return {
+        success: false,
+        message: data.message || 'Gagal mereset kata sandi pengguna.',
+        error: data.message,
+      };
+    }
+
+    return {
+      success: true,
+      message:
+        data?.message ||
+        `Kata sandi sementara untuk "${targetProfile.name}" berhasil diatur.${mustChangePassword ? ' Anggota akan diminta mengganti sandi saat login berikutnya.' : ''}`,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      message: err?.message || 'Terjadi kesalahan saat menghubungi layanan reset kata sandi.',
+      error: err?.message,
+    };
+  }
+}
+
+/**
  * Logout dari Supabase Auth
  */
 export async function logoutUser(): Promise<void> {
